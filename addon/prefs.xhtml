@@ -1,0 +1,115 @@
+<!--
+  SmartTranslate 首选项面板 v4 — 3 组 14 控件(v4 新增"引擎失败时自动切换备用引擎")
+  布局: 组内 html:div 网格两列(auto 1fr), 标签右对齐; 控件读写不走 preference 绑定,
+  由 prefs-pane.js 的 SmartTranslatePane 统一处理
+  深色模式纪律: 零色值硬编码, 弱化文字用 opacity 继承色, 边框/底色交给原生
+-->
+<vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml"
+      onload="SmartTranslatePane.init()">
+
+  <!-- 组 1: 翻译服务 -->
+  <groupbox style="margin:0 0 12px 0;">
+    <label><html:h2 style="margin:0 0 4px 0; font-size:1.15em; font-weight:600;">翻译服务</html:h2></label>
+    <html:div style="display:grid; grid-template-columns:auto 1fr; column-gap:10px; row-gap:8px; align-items:center; padding:2px 4px;">
+      <label value="引擎" control="st-engine" style="text-align:right; white-space:nowrap;"/>
+      <html:select id="st-engine" style="width:220px;">
+        <html:option value="engine1">Engine 1</html:option>
+        <html:option value="engine2">Engine 2</html:option>
+        <html:option value="engine3">Engine 3</html:option>
+      </html:select>
+
+      <label value="接口地址" control="st-endpoint" style="text-align:right; white-space:nowrap;"/>
+      <html:input id="st-endpoint" type="text" style="width:100%; box-sizing:border-box;"/>
+
+      <label value="模型" control="st-model" style="text-align:right; white-space:nowrap;"/>
+      <html:input id="st-model" type="text" style="width:100%; box-sizing:border-box;"/>
+
+      <label value="API Key" control="st-apikey" style="text-align:right; white-space:nowrap;"/>
+      <html:input id="st-apikey" type="password" style="width:100%; box-sizing:border-box;"/>
+
+      <label value="源语言" control="st-srclang" style="text-align:right; white-space:nowrap;"/>
+      <html:select id="st-srclang" style="width:160px;">
+        <html:option value="auto">自动检测</html:option>
+        <html:option value="en">英语</html:option>
+        <html:option value="zh-CN">简体中文</html:option>
+        <html:option value="ja">日语</html:option>
+        <html:option value="ko">韩语</html:option>
+        <html:option value="fr">法语</html:option>
+        <html:option value="de">德语</html:option>
+        <html:option value="ru">俄语</html:option>
+        <html:option value="es">西班牙语</html:option>
+      </html:select>
+
+      <label value="目标语言" control="st-targetlang" style="text-align:right; white-space:nowrap;"/>
+      <html:select id="st-targetlang" style="width:160px;">
+        <html:option value="zh-CN">简体中文</html:option>
+        <html:option value="en">英语</html:option>
+      </html:select>
+    </html:div>
+  </groupbox>
+
+  <!-- 组 2: 弹窗外观 -->
+  <groupbox style="margin:0 0 12px 0;">
+    <label><html:h2 style="margin:0 0 4px 0; font-size:1.15em; font-weight:600;">弹窗外观</html:h2></label>
+    <html:div style="display:grid; grid-template-columns:auto 1fr; column-gap:10px; row-gap:8px; align-items:center; padding:2px 4px;">
+      <label value="字体族" control="st-fontfamily" style="text-align:right; white-space:nowrap;"/>
+      <html:select id="st-fontfamily" style="width:220px;">
+        <html:option value="system">系统默认</html:option>
+        <html:option value="yahei">微软雅黑</html:option>
+        <html:option value="simsun">宋体</html:option>
+        <html:option value="kaiti">楷体</html:option>
+        <html:option value="sourcehansans">思源黑体</html:option>
+        <html:option value="sourcehanserif">思源宋体</html:option>
+        <html:option value="custom">自定义</html:option>
+      </html:select>
+
+      <!-- 辅助说明: 弱化文字用 opacity, 不引入色值 -->
+      <html:div style="grid-column:2; font-size:0.92em; opacity:0.72;">影响弹窗与侧栏的译文显示</html:div>
+
+      <!-- 条件行: 字体族选 "custom" 时由 prefs-pane.js 切换 display -->
+      <label id="st-fontcustom-label" value="自定义字体" control="st-fontcustom" style="display:none; text-align:right; white-space:nowrap;"/>
+      <html:input id="st-fontcustom" type="text" placeholder="css font-family 值" style="display:none; width:100%; box-sizing:border-box;"/>
+
+      <label value="字号" control="st-fontsize" style="text-align:right; white-space:nowrap;"/>
+      <html:span style="display:inline-flex; align-items:center; gap:4px; white-space:nowrap;">
+        <html:input id="st-fontsize" type="number" min="10" max="24" step="1" style="width:72px;"/>px
+      </html:span>
+
+      <label value="行高" control="st-lineheight" style="text-align:right; white-space:nowrap;"/>
+      <html:span style="display:inline-flex; align-items:center; gap:4px; white-space:nowrap;">
+        <html:input id="st-lineheight" type="number" min="1.2" max="2" step="0.1" style="width:72px;"/>倍
+      </html:span>
+
+      <label value="弹窗尺寸" style="text-align:right; white-space:nowrap;"/>
+      <html:span style="display:inline-flex; align-items:center; gap:4px; white-space:nowrap;">
+        宽<html:input id="st-popwidth" type="number" min="280" max="800" step="10" style="width:72px;"/>
+        x 高<html:input id="st-popheight" type="number" min="80" max="600" step="10" style="width:72px;"/>
+        px
+      </html:span>
+
+      <html:div style="grid-column:2; font-size:0.92em; opacity:0.72;">拖拽弹窗边缘也会同步更新此处数值</html:div>
+    </html:div>
+  </groupbox>
+
+  <!-- 组 3: 翻译行为(XUL checkbox/hbox 是 groupbox 直接子元素, 不进网格) -->
+  <groupbox style="margin:0;">
+    <label><html:h2 style="margin:0 0 4px 0; font-size:1.15em; font-weight:600;">翻译行为</html:h2></label>
+    <checkbox id="st-autotranslate" label="划词后自动翻译"/>
+    <label value="关闭后需选中文字并手动点击翻译" style="font-size:0.92em; opacity:0.72; padding-left:18px;"/>
+    <checkbox id="st-skipchinese" label="检测到中文时跳过翻译"/>
+    <label value="目标语言为中文且选区主要是中文时不发起翻译请求" style="font-size:0.92em; opacity:0.72; padding-left:18px;"/>
+    <checkbox id="st-autofailover" label="引擎失败时自动切换备用引擎"/>
+    <label value="当前引擎报错(限流/密钥失效/服务端故障/网络不通)时按顺序尝试其余已配置密钥的引擎, 连续 3 次成功后将记住可用引擎" style="font-size:0.92em; opacity:0.72; padding-left:18px;"/>
+    <!-- 写回收集: 单行 hbox(XUL label + html:select), 三态枚举存于 settings.writebackMode -->
+    <hbox align="center" style="padding:2px 4px;">
+      <label value="写回模式" control="st-writeback" style="white-space:nowrap;"/>
+      <html:select id="st-writeback" style="width:220px; margin-left:10px;">
+        <html:option value="off">关闭</html:option>
+        <html:option value="note">收集译文到子笔记</html:option>
+        <html:option value="note-bilingual">收集双语对照到子笔记</html:option>
+      </html:select>
+    </hbox>
+    <label value="翻译成功后自动追加到该文献的收集笔记" style="font-size:0.92em; opacity:0.72; padding-left:18px;"/>
+  </groupbox>
+</vbox>
