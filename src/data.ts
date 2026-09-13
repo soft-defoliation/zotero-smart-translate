@@ -5,7 +5,8 @@ import {
   setActiveEngine,
 } from "./engine/settings";
 import { GPTService } from "./engine/gpt-service";
-import { APIError, RateLimitError } from "./engine/retry";
+import { APIError, RateLimitError, isAbortError } from "./engine/retry";
+import { CancelledError, NoKeyError } from "./engine/errors";
 import {
   GlossaryManager,
   FERROELECTRIC_GLOSSARY,
@@ -64,10 +65,13 @@ let consecutiveFailovers = 0;
  * - APIError 401/403(密钥失效/无权限)、429、>=500(服务端故障);
  * - TypeError: fetch 在网络层失败(DNS/断网/连接重置)。
  * 不可转移(换引擎也救不了, 直接抛给用户看原因):
+ * - CancelledError/AbortError: 用户主动取消, 换引擎继续请求违背取消语义;
  * - APIError 400 及其他配置类中文错误(模型名/参数/endpoint 写错);
  * - 停用终闸(alive=false): 见 ALIVE_GATE_CODE, 它的 500 是内部状态而非服务端故障。
  */
 export function isFailoverEligible(e: unknown): boolean {
+  // 取消(含被新翻译接管而中止)不参与故障转移: 用户已经不要这次结果了
+  if (e instanceof CancelledError || isAbortError(e)) return false;
   if (e instanceof RateLimitError) return true;
   if (e instanceof APIError) {
     if (e.code === ALIVE_GATE_CODE) return false;
@@ -215,6 +219,7 @@ async function trySegmentMemory(
   text: string,
   glossaryInstruction: string,
   onProgress?: (partial: string) => void,
+  signal?: AbortSignal,
 ): Promise<MemoryOutcome | null> {
   const settings = getSettings();
   const segments = splitSentences(text);
@@ -256,15 +261,22 @@ async function trySegmentMemory(
       glossaryInstruction: glossaryInstruction
         ? `${glossaryInstruction}\n${NUMBERING_INSTRUCTION}`
         : NUMBERING_INSTRUCTION,
+      // 用户取消透传: 编号请求同样可被中止
+      signal,
     });
     parsed = parseNumberedTranslations(result.text, missingIndexes.length);
-  } catch {
+  } catch (e) {
+    // 用户主动取消: 不回落整段路径(那会违背取消语义再发一次请求),
+    // 统一转 CancelledError 上抛, 且此时尚未写任何缓存
+    if (isAbortError(e)) throw new CancelledError();
     // 编号请求抛错: 不在此处消费错误, 回落整段路径重新走退避/故障转移
     return null;
   }
   if (!parsed) return null;
   const translations = parsed;
 
+  // 取消落在"请求成功"与"写句子缓存"之间的窗口: 不写句子缓存直接取消
+  if (signal?.aborted) throw new CancelledError();
   // 新译文逐条入句子缓存: 键与查询一致(归一化句文本), 供下次单句重选直接命中
   const positionByIndex = new Map<number, number>();
   missingIndexes.forEach((index, order) => {
@@ -293,6 +305,7 @@ async function attemptTranslateWithEngine(
   text: string,
   onProgress?: (partial: string) => void,
   disableMemory = false,
+  signal?: AbortSignal,
 ): Promise<string> {
   // 语言对取自设置单例, 消除硬编码死设置
   const settings = getSettings();
@@ -327,6 +340,7 @@ async function attemptTranslateWithEngine(
         text,
         glossaryInstruction,
         onProgress,
+        signal,
       );
   // 全命中: 结果已由缓存句拼出(已回放 onProgress), 写全键缓存后直接返回, 0 请求
   if (memory?.allCached) {
@@ -334,35 +348,46 @@ async function attemptTranslateWithEngine(
     return memory.text;
   }
   let finalText: string;
-  if (memory) {
-    finalText = memory.text;
-  } else {
-    const result = await service.translate({
-      text,
-      sourceLang: settings.sourceLanguage,
-      targetLang: settings.targetLanguage,
-      onProgress,
-      glossaryInstruction,
-    });
-    finalText = result.text;
-  }
-  // 译后残留检测: 术语仍以英文出现在译文里时, 触发一次修正性二次请求,
-  // prompt 尾部点名残留词条; 只重试一次且第二次结果无论有无改善都采用,
-  // 避免死循环。onProgress 照常透传二次流, 面板看到的是修正过程。
-  // (编号补齐路径与整段路径共享本段: 残留检测同样生效)
-  if (glossaryEntries.length > 0) {
-    const residual = residualTerms(finalText, glossaryEntries);
-    if (residual.length > 0) {
-      const retry = await service.translate({
+  try {
+    if (memory) {
+      finalText = memory.text;
+    } else {
+      const result = await service.translate({
         text,
         sourceLang: settings.sourceLanguage,
         targetLang: settings.targetLanguage,
         onProgress,
-        glossaryInstruction: `${glossaryInstruction}\n注意: 上次译文中以下术语未按对照表翻译: ${residual.join(", ")}，本次必须使用表中译名`,
+        glossaryInstruction,
+        signal,
       });
-      finalText = retry.text;
+      finalText = result.text;
     }
+    // 译后残留检测: 术语仍以英文出现在译文里时, 触发一次修正性二次请求,
+    // prompt 尾部点名残留词条; 只重试一次且第二次结果无论有无改善都采用,
+    // 避免死循环。onProgress 照常透传二次流, 面板看到的是修正过程。
+    // (编号补齐路径与整段路径共享本段: 残留检测同样生效)
+    if (glossaryEntries.length > 0) {
+      const residual = residualTerms(finalText, glossaryEntries);
+      if (residual.length > 0) {
+        const retry = await service.translate({
+          text,
+          sourceLang: settings.sourceLanguage,
+          targetLang: settings.targetLanguage,
+          onProgress,
+          glossaryInstruction: `${glossaryInstruction}\n注意: 上次译文中以下术语未按对照表翻译: ${residual.join(", ")}，本次必须使用表中译名`,
+          signal,
+        });
+        finalText = retry.text;
+      }
+    }
+  } catch (e) {
+    // 用户主动取消: 统一转 CancelledError 上抛; 此时未执行下方 cachePut,
+    // 整段缓存与句子缓存都不会被取消路径污染
+    if (isAbortError(e)) throw new CancelledError();
+    throw e;
   }
+  // 取消落在"请求成功"与"写整段缓存"之间的窗口: 不写缓存直接取消
+  if (signal?.aborted) throw new CancelledError();
   // 仅成功结果入缓存; 失败不缓存, 下次调用仍走真实请求以便重试。
   // 缓存写入最终采用值(可能是二次修正结果)
   cachePut(cacheKey, finalText);
@@ -381,6 +406,12 @@ export interface EngineResolvedOptions {
    * 编号请求会把结构行当句子切走, 拼装后格式被破坏。
    */
   disableMemory?: boolean;
+  /**
+   * 取消信号(可选): 透传到本次翻译的全部 fetch(整段/编号补齐/残留修正),
+   * 用户点"停止"即中止在途请求; AbortError 统一转 CancelledError 上抛,
+   * 取消路径不写任何缓存, 也不触发退避重试与故障转移。
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -407,10 +438,8 @@ export async function translateText(
   }
   const candidates = resolveCandidates(settings, active);
   if (candidates.length === 0) {
-    throw new APIError(
-      "未配置 API 密钥, 请在 Zotero 设置 → SmartTranslate 中为当前引擎填写 API Key",
-      401,
-    );
+    // 引导型错误: UI 层据此文案渲染"打开设置"入口(行为兼容, 文案未变)
+    throw new NoKeyError();
   }
   return runCandidateChain(
     active,
@@ -422,6 +451,7 @@ export async function translateText(
         text,
         onProgress,
         opts?.disableMemory === true,
+        opts?.signal,
       ),
     (engine, failover) =>
       opts?.onEngineResolved?.(engine.id, engine.name, failover),

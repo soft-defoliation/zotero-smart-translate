@@ -8,9 +8,21 @@
 import { translateText } from "../data";
 import { zhErrorMessage } from "../engine/errors";
 import { setExtraField } from "../engine/extra-fields";
+import { createProgressLine } from "../reading/progress-line";
 import { showResultPanel } from "./result-panel";
+import { translateItemsField } from "./field-batch";
 
 const SHORTCUT = { ctrl: true, shift: true, key: "T" };
+
+/**
+ * 本会话菜单项的归属戳: 插件重载后, 上次会话残留的菜单项 command 监听指向
+ * 旧闭包(旧 bundle 已卸载), 点击无效 — 僵尸入口。本会话新建的项都打上该戳,
+ * popupshowing 时发现无戳/旧戳的项先移除再重建。
+ * 注: 存属性用 setAttribute("data-st-owner") 而非 dataset.stOwner —
+ * XUL menuitem 不保证实现 HTMLElement 的 dataset API, setAttribute 对任何
+ * Element 都可用。
+ */
+const MENU_OWNER = "st-" + Date.now();
 
 /** 聚合一组窗口级卸载步骤为一个总卸载函数, 单个失败不阻断其余 */
 function combineUnloads(unloads: Array<() => void>): () => void {
@@ -35,59 +47,92 @@ export function registerItemMenu(Zotero: any): () => void {
   try {
     for (const win of Zotero.getMainWindows?.() ?? []) {
       const menu = win.document?.getElementById("zotero-itemmenu");
-      if (!menu || menu.querySelector?.(".smarttranslate-title-menuitem")) continue;
+      if (!menu) continue;
+      // 防重复挂监听: 仅当已存在带"本会话 owner 戳"的项时跳过 —
+      // 无戳旧项(上次插件会话残留)不阻止注册, 交给 onPopupShowing 清理重建
+      if (
+        menu.querySelector?.(
+          `.smarttranslate-title-menuitem[data-st-owner="${MENU_OWNER}"]`,
+        )
+      ) {
+        continue;
+      }
       const onPopupShowing = () => {
+        /**
+         * 菜单项"查漏补缺"工厂: 已存在且带本会话戳的项原样保留;
+         * 无戳/旧戳的项(上次插件会话残留, command 指向已死的旧闭包, 点击无效)
+         * 先移除再新建, 新建项一律打上 MENU_OWNER 戳。
+         */
+        const ensureItem = (
+          cls: string,
+          label: string,
+          onCommand: () => void,
+        ): void => {
+          let item = menu.querySelector?.(`.${cls}`) as any;
+          if (item && item.getAttribute?.("data-st-owner") !== MENU_OWNER) {
+            // 僵尸项: 上次会话的闭包已死, 留着只会误导用户, 先移除
+            item.remove?.();
+            item = null;
+          }
+          if (item) return;
+          item =
+            win.document.createXULElement?.("menuitem") ??
+            win.document.createElement("menuitem");
+          item.className = cls;
+          item.setAttribute("label", label);
+          item.setAttribute("data-st-owner", MENU_OWNER);
+          item.addEventListener("command", onCommand);
+          menu.appendChild(item);
+        };
         // 第一/二项: 标题/摘要翻译(译文写入条目 Extra 字段, 供自定义列展示)。
         // 注: 本模块已静态 import data.ts 的 translateText, 翻译链路随主 bundle
         // 启动即加载; 此处动态 import 本模块仅复用模块缓存, 无额外懒加载效果
-        let titleItem = menu.querySelector?.(".smarttranslate-title-menuitem") as any;
-        if (!titleItem) {
-          titleItem = win.document.createXULElement?.("menuitem") ?? win.document.createElement("menuitem");
-          titleItem.className = "smarttranslate-title-menuitem";
-          titleItem.setAttribute("label", "SmartTranslate: 翻译标题（写入条目）");
-          titleItem.addEventListener("command", () => {
-            void import("./menus").then((m) => m.translateItemField(Zotero, "title"));
-          });
-          menu.appendChild(titleItem);
-        }
-        let abstractItem = menu.querySelector?.(".smarttranslate-abstract-menuitem") as any;
-        if (!abstractItem) {
-          abstractItem = win.document.createXULElement?.("menuitem") ?? win.document.createElement("menuitem");
-          abstractItem.className = "smarttranslate-abstract-menuitem";
-          abstractItem.setAttribute("label", "SmartTranslate: 翻译摘要（写入条目）");
-          abstractItem.addEventListener("command", () => {
-            void import("./menus").then((m) => m.translateItemField(Zotero, "abstract"));
-          });
-          menu.appendChild(abstractItem);
-        }
-        // 第三项: 阅读助手(全文摘要/创新点/方法结构化, 结果写子笔记)。
-        // 动态 import 与 hooks.ts 的回调风格一致, 菜单注册时不加载分析链路
-        let reading = menu.querySelector?.(".smarttranslate-reading-menuitem") as any;
-        if (!reading) {
-          reading = win.document.createXULElement?.("menuitem") ?? win.document.createElement("menuitem");
-          reading.className = "smarttranslate-reading-menuitem";
-          reading.setAttribute("label", "SmartTranslate: 阅读助手（摘要/创新点/方法）");
-          reading.addEventListener("command", () => {
-            void import("../reading/assistant").then((m) =>
-              m.runReadingAssistantForItem(Zotero),
-            );
-          });
-          menu.appendChild(reading);
-        }
-        // 第四项: 批量翻译导出(多选条目 -> 双语 Markdown 落盘到选定文件夹)。
-        // 同阅读助手做动态 import: 菜单注册时不加载导出链路
-        let batchExport = menu.querySelector?.(".smarttranslate-batch-export-menuitem") as any;
-        if (!batchExport) {
-          batchExport = win.document.createXULElement?.("menuitem") ?? win.document.createElement("menuitem");
-          batchExport.className = "smarttranslate-batch-export-menuitem";
-          batchExport.setAttribute("label", "SmartTranslate: 批量翻译导出（双语 Markdown）");
-          batchExport.addEventListener("command", () => {
-            void runBatchExportForSelection(Zotero).catch((e) => {
-              // 兜底: 动态 import 失效等极早期异常, 避免出现未处理的 Promise 拒绝
-              showMenuTip(Zotero, zhErrorMessage(e));
-            });
-          });
-          menu.appendChild(batchExport);
+        // popupshowing 事件路径整体兜底: 单个菜单项构建/事件异常只记日志,
+        // 不向 Zotero 菜单事件分发抛错, 保住整个右键菜单与其余监听
+        try {
+          ensureItem(
+            "smarttranslate-title-menuitem",
+            "SmartTranslate: 翻译标题（写入条目）",
+            () => {
+              void import("./menus").then((m) =>
+                m.translateItemField(Zotero, "title"),
+              );
+            },
+          );
+          ensureItem(
+            "smarttranslate-abstract-menuitem",
+            "SmartTranslate: 翻译摘要（写入条目）",
+            () => {
+              void import("./menus").then((m) =>
+                m.translateItemField(Zotero, "abstract"),
+              );
+            },
+          );
+          // 第三项: 阅读助手(全文摘要/创新点/方法结构化, 结果写子笔记)。
+          // 动态 import 与 hooks.ts 的回调风格一致, 菜单注册时不加载分析链路
+          ensureItem(
+            "smarttranslate-reading-menuitem",
+            "SmartTranslate: 阅读助手（摘要/创新点/方法）",
+            () => {
+              void import("../reading/assistant").then((m) =>
+                m.runReadingAssistantForItem(Zotero),
+              );
+            },
+          );
+          // 第四项: 批量翻译导出(多选条目 -> 双语 Markdown 落盘到选定文件夹)。
+          // 同阅读助手做动态 import: 菜单注册时不加载导出链路
+          ensureItem(
+            "smarttranslate-batch-export-menuitem",
+            "SmartTranslate: 批量翻译导出（双语 Markdown）",
+            () => {
+              void runBatchExportForSelection(Zotero).catch((e) => {
+                // 兜底: 动态 import 失效等极早期异常, 避免出现未处理的 Promise 拒绝
+                showMenuTip(Zotero, zhErrorMessage(e));
+              });
+            },
+          );
+        } catch (e) {
+          Zotero?.logError?.(e);
         }
       };
       menu.addEventListener("popupshowing", onPopupShowing);
@@ -174,13 +219,16 @@ function showMenuTip(
 }
 
 /**
- * 单字段翻译入口(标题或摘要): 取第一个选中的普通条目, 翻译后把译文写入
- * 条目 Extra 字段(key titleTranslation/abstractTranslation), 供条目列表
- * 自定义列(见 ui/item-columns.ts)展示, 亦与 T4Z 的 Extra 用法互通。
- * - 无选中条目/非普通条目 -> showMenuTip 提示后返回 null;
- * - 字段为空 -> 提示无可翻译内容, 不发请求;
- * - 翻译失败 -> 错误结果面板(文案可复制), 不写条目;
- * - 写回失败 -> 不影响结果展示, 面板正文追加一行警示, 译文仍可复制。
+ * 单字段翻译入口(标题或摘要): 单选走逐条流程(翻译后把译文写入条目 Extra
+ * 字段, key titleTranslation/abstractTranslation), 供条目列表自定义列
+ * (见 ui/item-columns.ts)与 Info 区译文行(见 ui/info-rows.ts)展示,
+ * 亦与 T4Z 的 Extra 用法互通; 多选(>1)走批量链路(T4Z 同款, 全量处理,
+ * 见 ui/field-batch.ts), 配进度窗汇总, 不返回单条结果面板。
+ * - 单选: 无选中条目/非普通条目 -> showMenuTip 提示后返回 null;
+ * - 单选: 字段为空 -> 提示无可翻译内容, 不发请求;
+ * - 单选: 翻译失败 -> 错误结果面板(文案可复制), 不写条目;
+ * - 单选: 写回失败 -> 不影响结果展示, 面板正文追加一行警示, 译文仍可复制;
+ * - 多选: 进度窗不可用(无窗口环境)时只跑批量不显示进度。
  */
 export async function translateItemField(
   Zotero: any,
@@ -188,6 +236,12 @@ export async function translateItemField(
 ): Promise<{ src: string; translation: string } | null> {
   try {
     const items = Zotero.getActiveZoteroPane?.()?.getSelectedItems?.() ?? [];
+    // 多选: 批量链路(含非普通条目, field-batch 内按空字段跳过兜底),
+    // 返回 null 与"无选中条目"同语义, 调用方(快捷键/菜单)不区分
+    if (items.length > 1) {
+      await runBatchFieldTranslation(Zotero, items, field);
+      return null;
+    }
     const item = items[0];
     if (
       !item ||
@@ -240,7 +294,57 @@ export async function translateItemField(
       `${src}\n----\n${translation}${warning}`,
     );
     return { src, translation };
-  } catch {
+  } catch (e) {
+    // 原为静默吞错: 至少记一行日志, 便于排查"点了菜单没反应"类问题;
+    // 返回 null 的既有语义不变
+    Zotero?.logError?.(e);
     return null;
+  }
+}
+
+/**
+ * 多选批量翻译的进度窗封装: 逐条回调经可更新进度行汇总(setText/setProgress,
+ * progress-line 工厂兜底为 null 时可选链静默), 结束后 headline 更新为结果
+ * 摘要并定时关闭。进度窗构建整体包 try/catch: 无窗口环境(测试/窗口已销毁)
+ * 只跑批量不显示进度, 不阻断翻译主流程。
+ */
+async function runBatchFieldTranslation(
+  Zotero: any,
+  items: any[],
+  field: "title" | "abstract",
+): Promise<void> {
+  const headline =
+    field === "title"
+      ? "SmartTranslate: 批量翻译标题"
+      : "SmartTranslate: 批量翻译摘要";
+  let pw: any = null;
+  try {
+    pw = new Zotero.ProgressWindow({ closeOnClick: false });
+    pw.show();
+    pw.changeHeadline(headline);
+  } catch {
+    pw = null;
+  }
+
+  // 汇总行: createProgressLine 自带兜底(失败返回 null), pw 为 null 时跳过;
+  // 引用提升到回调外, 回调里 ?. 静默降级(进度显示缺失但不阻断)
+  const summaryLine = pw ? createProgressLine(pw, `0/${items.length}`) : null;
+  const total = items.length;
+  let doneN = 0;
+  const result = await translateItemsField(items, field, {
+    onItemDone: (_index, status) => {
+      if (status === "done") doneN += 1;
+      summaryLine?.setText?.(`${doneN}/${total}`);
+      summaryLine?.setProgress?.(Math.round((doneN / total) * 100));
+    },
+  });
+
+  try {
+    pw?.changeHeadline?.(
+      `${headline} 完成 ${result.done}/${result.total} · 跳过 ${result.skipped} · 失败 ${result.failed}`,
+    );
+    pw?.startCloseTimer?.(4000);
+  } catch {
+    /* 进度窗可能已销毁, 收尾失败静默 */
   }
 }

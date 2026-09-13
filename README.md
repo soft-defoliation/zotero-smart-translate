@@ -2,7 +2,10 @@
 
 AI-powered Zotero reading assistant with:
 - 🔤 **Translation**: Multi-engine (OpenAI-compatible), streaming, auto failover, session caching
-- 📑 **Title/Abstract to Item**: Translate title/abstract and persist to item Extra fields, with item-list columns
+- ⏹️ **Cancellation**: "停止" (Stop) button while translating, in both the selection popup and the sidebar; partial output kept with a neutral "已取消" (cancelled) status
+- 🧭 **Setup guidance**: "打开设置" (Open Preferences) button next to missing-API-key errors, one click to the plugin settings page
+- 📑 **Title/Abstract to Item**: Translate title/abstract and persist to item Extra fields, with item-list columns and Info-pane rows
+- 📦 **Batch to items**: Multi-select items → sequential title/abstract translation written back per item, with a progress-window summary
 - 📝 **Summarization**: Map-reduce chapter summarization with glossary injection
 - 💡 **Innovation Extraction**: Structured output with section evidence
 - 🔬 **Method Structuring**: Ferroelectric schema (composition/synthesis/characterization/DFT/loading)
@@ -11,10 +14,10 @@ AI-powered Zotero reading assistant with:
 
 ## Status
 
-**Version**: 1.1.0  
+**Version**: 1.2.0  
 **Zotero**: 7.0 – 10.*  
 **Build**: ✅ `npm run build` → `.scaffold/build/smart-translate-for-zotero.xpi`  
-**Tests**: ✅ 213 passing (`npm test`)  
+**Tests**: ✅ 241 passing (`npm test`)  
 **TypeScript**: ✅ `tsc --noEmit` clean
 
 ## Quick Start
@@ -58,21 +61,28 @@ npm test
 
 ### Selection popup
 - Streaming translation popup, modeled on T4Z's popup
+- "停止" (Stop) button while a translation is running: aborts the in-flight request; the partial output is kept and a neutral "已取消" (cancelled) hint is shown
 - Copyable via a 3-level fallback copy path
 - Drag-to-resize, size persisted across sessions
 - Merge mode: concatenate selections across pages into one translation
 - Double-click to copy the full translation
 
+### Missing-key guidance
+- With no API key configured, an "打开设置" (Open Preferences) button appears next to the error in the selection popup and the bilingual sidebar, jumping straight to the plugin settings page
+
 ### Title / abstract translation (written to items)
 - Right-click menu on items: "SmartTranslate: 翻译标题（写入条目）" / "SmartTranslate: 翻译摘要（写入条目）"
 - Translations are persisted to the item Extra field as `titleTranslation` / `abstractTranslation`, in a line format interoperable with `zotero-plugin-toolkit` / T4Z (switching plugins does not lose data)
 - Item-list custom columns "标题译文" (Title Translation) and "摘要译文" (Abstract Translation), enable them via the column picker
+- Info-pane rows "标题译文" / "摘要译文" (Title (Translation) / Abstract (Translation) in the English UI) at the bottom of the item Info section, sharing the same Extra-field data source as the item-list columns
+- Batch mode: multi-select items → the same right-click menus translate sequentially and write back one by one, with a progress window and a final summary "完成 X/Y · 跳过 Z · 失败 W" (attachment items are also processed; the title is written to the attachment itself)
 
 ### Annotation write-back
 - Translation results written back to annotations per settings: comment / bilingual / off
 
 ### Bilingual sidebar panel
 - Item-side bilingual panel (toggle with `Alt+B` in the reader)
+- The translate button turns into "停止" (Stop) while a translation is running; clicking aborts the request (partial output kept, "已取消" status)
 - Draggable divider; font family / font size / line-height settings
 - Copy source / translation / all
 

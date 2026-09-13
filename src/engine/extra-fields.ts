@@ -21,15 +21,16 @@ export interface ParsedExtra {
 }
 
 /**
- * 解析 extra 行文本: 空行跳过; 每行按首个 ": " 分割; 不含 ": " 或 key 为空的行
+ * 解析 extra 行文本: 真空行跳过; 每行按首个 ": " 分割; 不含 ": " 或 key 为空的行
  * 归入 nonStandard 并保持原序; 同名 key 的多个值按出现顺序全保留。
  */
 export function parseExtraFields(raw: string): ParsedExtra {
   const fields = new Map<string, string[]>();
   const nonStandard: string[] = [];
   for (const line of (raw ?? "").split("\n")) {
-    // 空行跳过: 不占 key 也不入非标准行(toolkit 同口径)
-    if (line.trim() === "") continue;
+    // 空行跳过: 仅丢弃真空字符串行, 与 toolkit 的 `if (!line) return` 同口径 —
+    // 纯空白行(如 "\r")不算空行, 保留进 nonStandard 以免 roundtrip 丢数据
+    if (line === "") continue;
     // indexOf 取首个 ": "; -1 为不含分隔符, 0 为 key 为空, 两者都算非标准行
     const idx = line.indexOf(": ");
     if (idx <= 0) {

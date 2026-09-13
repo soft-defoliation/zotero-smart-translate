@@ -1,0 +1,35 @@
+# SmartTranslate CI（P3 批次 2026-09-13 新建）
+# 目标：push(main) 与 PR 时自动执行 类型检查 → 单测 → 构建，保证主干可用。
+# 取舍：单 job、无缓存、无矩阵，保持最简，后续有需要再扩。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # linux 可跑：构建链(esbuild + zotero-plugin-scaffold)无平台绑定产物，
+    # esbuild 平台二进制由 npm 可选依赖按平台自动解析，package.json scripts 无平台耦合
+    runs-on: ubuntu-latest
+    steps:
+      # 拉取源码
+      - uses: actions/checkout@v4
+
+      # 安装 Node 22（npm registry 用默认源）
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 按 package-lock.json 锁定版本安装依赖（可复现，不用 npm install）
+      - run: npm ci
+
+      # 类型检查：0 error 才继续
+      - run: npx tsc --noEmit
+
+      # 单元测试（vitest run）：全绿才算通过
+      - run: npm test
+
+      # 构建 xpi 产物（zotero-plugin build），验证打包链路完整
+      - run: npm run build

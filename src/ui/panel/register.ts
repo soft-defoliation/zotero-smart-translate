@@ -59,7 +59,8 @@ export function registerSidebarSection(Zotero: any, pluginID: string): void {
       },
       onItemChange: (props: any) => {
         // 仅阅读器标签页启用; item.id 写 body.dataset 供后续扩展取用
-        if (props.tabType !== "reader") props.setEnabled(false);
+        // setEnabled 可选链: 老版本/未来版本 props 未提供该方法时静默跳过, 单点异常不打断条目切换事件分发
+        if (props.tabType !== "reader") props.setEnabled?.(false);
         if (props.body && props.item != null) {
           props.body.dataset.itemId = String(props.item.id ?? "");
         }

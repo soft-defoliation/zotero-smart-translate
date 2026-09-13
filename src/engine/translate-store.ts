@@ -36,7 +36,8 @@ export interface TranslateStore {
   /**
    * 置 running: 记录本次原文/引擎并清空上次结果, fromSelection 由来源标记。
    * 返回本次翻译的代际令牌(gen), 后续回调必须原样带回。
-   * 代际令牌: 新 begin 使旧流的全部回调失效, 界面永远跟随最近一次翻译。
+   * 代际令牌: 新 begin 使旧流的全部回调失效, 界面永远跟随最近一次翻译;
+   * 同时新 begin 会真实中止旧代际的在途请求(见本文件 begin 处注释)。
    */
   begin(
     raw: string,
@@ -61,6 +62,17 @@ export interface TranslateStore {
   finish(gen: number, result: string): void;
   /** 置 error: 记录原因, 保留旧译文(设计稿: 失败不清空译文框), 仅代际匹配才生效 */
   fail(gen: number, message: string): void;
+  /**
+   * 当前代际在途请求的 AbortSignal: begin 后由调用方取走并透传给
+   * translateText, 实现"停止"按钮的真实取消; 从未 begin 过时为 undefined。
+   */
+  getSignal(): AbortSignal | undefined;
+  /**
+   * 中止当前在途翻译: status 为 running 且存在控制器时 abort 并返回 true
+   * (随后在途 fetch 以 AbortError 拒绝, data 层转 CancelledError, 调用方
+   * 经既有 fail 路径落"已取消", 不需要新状态); 否则返回 false。
+   */
+  cancelCurrent(): boolean;
 }
 
 export interface PanelRegistry {
@@ -72,8 +84,11 @@ export interface PanelRegistry {
 
 export function createTranslateStore(): TranslateStore {
   // 代际令牌: 新 begin 使旧流的全部回调失效, 界面永远跟随最近一次翻译。
-  // 旧请求不做 Abort(继续在后台走完), 只靠 gen 校验丢弃迟到回调。
+  // 旧请求的处置从"后台走完靠 gen 丢弃回调"升级为"真实 abort 中止":
+  // 省带宽与 API 计费, 迟到回调依旧由 gen 校验作废(双保险)。
   let generation = 0;
+  // 当前代际的在途请求控制器: begin 时建新并中止旧的, 供取消按钮 abort
+  let currentAbort: AbortController | null = null;
   let record: TranslateRecord = {
     raw: "",
     result: "",
@@ -88,6 +103,11 @@ export function createTranslateStore(): TranslateStore {
   return {
     getRecord: () => record,
     begin(raw, engineId, engineName, fromSelection = false) {
+      // 旧代际流被真实取消: 上一路在途请求的 fetch 立即以 AbortError 拒绝,
+      // 其迟到回调(部分结果/fail)本就由下方 gen 校验作废, abort 只是把
+      // "旧请求走完"改为"旧请求被中止", 不影响界面语义
+      currentAbort?.abort();
+      currentAbort = new AbortController();
       generation += 1;
       record = {
         ...record,
@@ -132,6 +152,18 @@ export function createTranslateStore(): TranslateStore {
         errorMessage: message,
         updatedAt: Date.now(),
       };
+    },
+    getSignal() {
+      // 当前代际的 signal: begin 建新控制器后由调用方取走透传给请求链
+      return currentAbort?.signal;
+    },
+    cancelCurrent() {
+      // 仅 running 态且有在途控制器时才谈得上"取消当前"
+      if (record.status === "running" && currentAbort) {
+        currentAbort.abort();
+        return true;
+      }
+      return false;
     },
   };
 }

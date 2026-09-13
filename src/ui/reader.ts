@@ -28,7 +28,13 @@ import {
 } from "../engine/settings";
 import { getSharedStore, refreshAllPanels } from "../engine/translate-store";
 import { isMostlyChinese } from "../engine/lang-detect";
-import { zhErrorMessage } from "../engine/errors";
+import {
+  CancelledError,
+  CANCELLED_MESSAGE,
+  NoKeyError,
+  zhErrorMessage,
+} from "../engine/errors";
+import { canOpenPrefs, openPluginPrefs } from "./prefs";
 import { appendToCollectNote, buildCollectEntry } from "../reading/notes";
 import type { Settings } from "../types";
 
@@ -140,6 +146,8 @@ interface PopupRow {
   root: any;
   textarea: any;
   retryButton: any;
+  /** 停止按钮(仅翻译进行中存在): 点击中止当前代际的在途请求 */
+  stopButton?: any;
   /** 拼接按钮行容器: 状态变化时整行重建(缓冲空/非空的按钮集不同) */
   concatRow?: any;
   /** 非拼接态的基础 placeholder(按 autoTranslate 生成), 缓冲清空后恢复用 */
@@ -172,8 +180,9 @@ async function onReaderPopupShow(Zotero: any, event: any): Promise<void> {
   // (run 只接收 payload, 不再捕获 text, 两种入口共用同一条流式流程)
   const run = async (payload: string): Promise<void> => {
     // 无互斥: 新一次翻译直接 begin 抢占(新代际接管界面)。
-    // 旧请求不做 Abort, 继续在后台走完, 但其回调经 store 的代际校验
-    // 自动作废(gen 不符即 return), 不会覆盖本行的流式结果。
+    // begin 会先 abort 旧代际的在途请求(旧请求被真实中止, 不再后台走完),
+    // 旧流的迟到回调再经 store 的代际校验作废(gen 不符即 return),
+    // 不会覆盖本行的流式结果。
     // fromSelection=true: 侧栏状态行据此显示"已同步划词翻译"
     const engine = getActiveEngine();
     const gen = getSharedStore().begin(
@@ -182,6 +191,11 @@ async function onReaderPopupShow(Zotero: any, event: any): Promise<void> {
       engine?.name ?? "",
       true,
     );
+    // 停止按钮仅翻译进行中显示; 句柄兼作"本 run 仍是最新代际"的判据 —
+    // 新一轮 run 会先移除旧按钮再建新按钮, 旧 run 的迟到清理/提示据此让位
+    const stopButton = showStopButton(row, () => {
+      getSharedStore().cancelCurrent();
+    });
     try {
       const result = await translateText(
         payload,
@@ -197,6 +211,8 @@ async function onReaderPopupShow(Zotero: any, event: any): Promise<void> {
             getSharedStore().resolveEngine(gen, engineId, engineName, failover);
             void refreshAllPanels();
           },
+          // 停止按钮的真实取消通道: abort 本代际在途请求
+          signal: getSharedStore().getSignal(),
         },
       );
       getSharedStore().finish(gen, result);
@@ -205,10 +221,29 @@ async function onReaderPopupShow(Zotero: any, event: any): Promise<void> {
       // 写回收集笔记: 内部 try/catch 且异步, 不阻塞弹窗展示, 失败不影响主流程
       void writeTranslationToCollectNote(Zotero, reader, payload, result);
     } catch (e) {
+      const cancelled = e instanceof CancelledError;
       getSharedStore().fail(gen, zhErrorMessage(e));
       void refreshAllPanels();
-      updatePopupRow(row, `翻译失败: ${zhErrorMessage(e)}`, true);
-      showRetryButton(row, () => void run(payload));
+      if (cancelled) {
+        // 用户主动取消(或被新一轮翻译中止): 中性提示, 不按错误样式渲染,
+        // textarea 保留已流出的部分译文, 也不给重试按钮
+        if (row.stopButton === stopButton) {
+          showCancelledHint(row);
+        }
+      } else {
+        updatePopupRow(row, `翻译失败: ${zhErrorMessage(e)}`, true);
+        // 未配置密钥: 错误文案旁追加"打开设置"入口引导配置(API 缺失时不渲染)
+        if (e instanceof NoKeyError && canOpenPrefs()) {
+          showOpenPrefsButton(row);
+        }
+        showRetryButton(row, () => void run(payload));
+      }
+    } finally {
+      // 仅当停止按钮仍属于本 run 时才移除: 防误删新一轮 run 的按钮
+      if (row.stopButton === stopButton) {
+        row.stopButton?.remove?.();
+        row.stopButton = null;
+      }
     }
   };
 
@@ -528,6 +563,63 @@ function showTranslateButton(row: PopupRow, onStart: () => void): void {
     row.root.appendChild(button);
   } catch {
     /* 弹窗已关闭, 放弃手动翻译入口 */
+  }
+}
+
+/**
+ * 停止按钮(st-stop): 仅翻译进行中显示, 点击中止当前代际在途请求。
+ * 追加前先移除旧按钮防堆积(新一轮 run 的旧按钮由调用方按句柄让位)。
+ * 返回按钮元素供 run 持有, 兼作"本 run 仍是最新代际"的判据。
+ */
+function showStopButton(row: PopupRow, onCancel: () => void): any {
+  try {
+    row.stopButton?.remove?.();
+    const button = createPopupButton(row, "停止", onCancel);
+    button.className = "st-stop";
+    row.stopButton = button;
+    row.root.appendChild(button);
+    return button;
+  } catch {
+    /* 弹窗已关闭, 放弃停止入口 */
+    return null;
+  }
+}
+
+/**
+ * 取消后的中性提示("已取消", 不带错误样式): 1.5 秒后自动移除,
+ * textarea 不动 — 已流出的部分译文原样保留供复制。
+ */
+function showCancelledHint(row: PopupRow): void {
+  try {
+    row.root?.querySelector?.(".st-cancelled-hint")?.remove?.();
+    const hint = row.doc.createElement("span");
+    hint.className = "st-cancelled-hint";
+    hint.setAttribute(
+      "style",
+      "margin-top:6px;font-size:11px;color:#555;opacity:0.9;",
+    );
+    hint.textContent = CANCELLED_MESSAGE;
+    row.root.appendChild(hint);
+    setTimeout(() => {
+      hint.remove?.();
+    }, 1500);
+  } catch {
+    /* 弹窗已关闭, 放弃取消提示 */
+  }
+}
+
+/** "打开设置"小按钮(st-openprefs): NoKeyError 时挂在错误文案旁, 引导去配置密钥 */
+function showOpenPrefsButton(row: PopupRow): void {
+  try {
+    // 同类按钮防堆积(理论上一次失败只挂一个, 保守去重)
+    row.root?.querySelector?.(".st-openprefs")?.remove?.();
+    const button = createPopupButton(row, "打开设置", () => {
+      openPluginPrefs();
+    });
+    button.className = "st-openprefs";
+    row.root.appendChild(button);
+  } catch {
+    /* 弹窗已关闭, 放弃设置入口 */
   }
 }
 

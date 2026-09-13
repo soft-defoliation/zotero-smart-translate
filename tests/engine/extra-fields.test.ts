@@ -49,6 +49,24 @@ describe("parseExtraFields", () => {
     expect(nonStandard).toEqual([]);
   });
 
+  it("真空行丢弃, 纯空白行(如 \\r)保留进 nonStandard(toolkit if (!line) 同口径)", () => {
+    // "a: 1" 与 "b: 2" 之间夹一个仅含 \\r 的行(CRLF 文本被按 \\n 切分后的残迹)
+    const { fields, nonStandard } = parseExtraFields("a: 1\n\r\nb: 2");
+    expect([...fields.keys()]).toEqual(["a", "b"]);
+    // \\r 行不再被 trim 误判为空行: 原样进 nonStandard
+    expect(nonStandard).toEqual(["\r"]);
+  });
+
+  it("\\r 行 roundtrip 保留: 写回后不丢", async () => {
+    const item = makeItem("DOI: 10.1/x\n\r");
+    await setExtraField(item, "titleTranslation", "译");
+    // 仅含 \\r 的行随非标准行兜底保留, 不被空行口径误吞
+    expect(item.getField("extra")).toBe(
+      "DOI: 10.1/x\ntitleTranslation: 译\n\r",
+    );
+    expect(getExtraField(item, "DOI")).toBe("10.1/x");
+  });
+
   it("同名 key 多值全保留, 顺序不变(读取方取第一个)", () => {
     const { fields } = parseExtraFields("k: v1\nk: v2");
     expect(fields.get("k")).toEqual(["v1", "v2"]);

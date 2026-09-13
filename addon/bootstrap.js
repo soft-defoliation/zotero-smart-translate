@@ -6,6 +6,9 @@
  */
 
 var chromeHandle;
+// startup 时记录 rootURI, 供 loadFTL 拼 locale FTL 资源 URI:
+// locale 目录不在 chrome content 注册范围内, 只能用 rootURI 绝对路径
+var pluginRootURI;
 
 function install(data, reason) {}
 
@@ -17,6 +20,7 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   chromeHandle = aomStartup.registerChrome(manifestURI, [
     ["content", "smarttranslate", rootURI + "content/"],
   ]);
+  pluginRootURI = rootURI;
 
   const ctx = { rootURI };
   ctx._globalThis = ctx;
@@ -61,6 +65,10 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
     if (win.closed) continue;
     if (win.customElements?.get("smarttranslate-panel")) continue;
     try {
+      // FTL 资源先于 panel.js 挂载: 侧栏/Info 行的 l10nID 渲染时需要
+      // 资源已就位; loadFTL 自带 __stFTLLoaded 防重, 与 onMainWindowLoad
+      // 双路径互不冲突
+      loadFTL(win);
       Services.scriptloader.loadSubScript(
         "chrome://smarttranslate/content/scripts/panel.js",
         win,
@@ -71,7 +79,36 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   }
 }
 
+/**
+ * 给主窗口挂载插件 FTL locale 资源(条目 Info 区译文行等 l10nID 的消息源)。
+ * - 候选顺序: 当前 locale 优先, 回退 en-US; loc 本身是 en-US 时只有一个;
+ *   非 en-US 目录缺失时(如 en-GB)该资源静默 404, 由 en-US 候选兜底;
+ * - 资源 URI 用 pluginRootURI 拼接: locale 目录不在 chrome content 下,
+ *   chrome://smarttranslate/ 只映射到 content/;
+ * - __stFTLLoaded 防重: startup 补载循环与 onMainWindowLoad 双路径都会调,
+ *   l10n 资源重复注册虽无害但冗余, flag 判重保证幂等;
+ * - try/catch 兜底: FTL 加载失败只记日志不阻断启动, 行标签可能显示为
+ *   消息 id 本身, 其余功能不受影响。
+ */
+function loadFTL(win) {
+  if (!win || win.__stFTLLoaded) return;
+  try {
+    const loc = Zotero.locale || "en-US";
+    const candidates = loc === "en-US" ? ["en-US"] : [loc, "en-US"];
+    const ids = candidates.map(
+      (candidate) => `${pluginRootURI}locale/${candidate}/smarttranslate-main.ftl`,
+    );
+    win.document.l10n?.addResourceIds?.(ids);
+    win.__stFTLLoaded = true;
+  } catch (e) {
+    Zotero.logError(e);
+  }
+}
+
 async function onMainWindowLoad({ window }, reason) {
+  // FTL 资源在 panel.js 之前挂载: 侧栏 header/sidenav 的 l10nID 渲染时
+  // 需要资源已就位(loadFTL 内部有防重, 与 startup 补载循环互不冲突)
+  loadFTL(window);
   // 侧栏自定义元素 bundle: customElements 只存在于各主窗口, 必须在窗口
   // 作用域内执行注册; Services 只在 bootstrap 沙箱可用(主 bundle 里没有),
   // 因此 loadSubScript 放这里而不是 hooks.onMainWindowLoad。

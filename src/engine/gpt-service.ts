@@ -13,6 +13,9 @@ export interface TranslationRequest {
   // 术语对照表附加指令(可选): 非空时拼接在模板 prompt 尾部, 由 data 层组装;
   // gpt-service 不感知术语来源与重试语义
   glossaryInstruction?: string;
+  // 取消信号(可选): 用户点"停止"时由上层传入, 透传给 fetch;
+  // undefined 时行为与原先完全一致(不挂信号)
+  signal?: AbortSignal;
   onProgress?: (partial: string) => void;
 }
 
@@ -54,7 +57,7 @@ export class GPTService {
     const fullPrompt = req.glossaryInstruction
       ? `${prompt}${req.glossaryInstruction}`
       : prompt;
-    return this.sendCompletion(fullPrompt, req.onProgress);
+    return this.sendCompletion(fullPrompt, req.onProgress, req.signal);
   }
 
   async complete(req: CompletionRequest): Promise<TranslationResult> {
@@ -75,10 +78,13 @@ export class GPTService {
   /**
    * 共享传输层: 请求体构建(thinking 关闭)/流式或非流式解析/退避重试/
    * 1210 降级, translate 与 complete 两条通道全部经由此处发送。
+   * signal 可选透传给 fetch: 用户取消时 fetch 以 AbortError 立即拒绝,
+   * 该错误不属于可重试类别, 退避重试层会原样抛出(见 retry.isAbortError)。
    */
   private async sendCompletion(
     fullPrompt: string,
     onProgress?: (partial: string) => void,
+    signal?: AbortSignal,
   ): Promise<TranslationResult> {
     const start = Date.now();
     let firstByte = 0;
@@ -104,6 +110,8 @@ export class GPTService {
         method: "POST",
         headers,
         body: JSON.stringify(body),
+        // undefined 时不挂信号, 行为与原先一致
+        signal,
       });
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");

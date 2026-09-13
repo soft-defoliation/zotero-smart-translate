@@ -4,7 +4,14 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ERROR_ZH, zhErrorMessage } from "../../src/engine/errors";
+import {
+  CANCELLED_MESSAGE,
+  CancelledError,
+  ERROR_ZH,
+  NO_KEY_MESSAGE,
+  NoKeyError,
+  zhErrorMessage,
+} from "../../src/engine/errors";
 import { APIError, RateLimitError } from "../../src/engine/retry";
 import { clearTranslateCache } from "../../src/engine/cache";
 import { setSettings, setSecret } from "../../src/engine/settings";
@@ -37,6 +44,20 @@ describe("ERROR_ZH", () => {
   it("非 Error 值应回退通用文案", () => {
     expect(zhErrorMessage(undefined)).toContain("翻译失败");
   });
+
+  it("CancelledError 应返回简短中性文案(取消不按错误呈现)", () => {
+    expect(zhErrorMessage(new CancelledError())).toBe(CANCELLED_MESSAGE);
+    expect(zhErrorMessage(new CancelledError())).toBe("已取消");
+  });
+
+  it("NoKeyError 应原样返回文案(引导用户去设置页)", () => {
+    // 文案与历史 APIError 版本完全一致(行为兼容)
+    expect(NO_KEY_MESSAGE).toBe(
+      "未配置 API 密钥, 请在 Zotero 设置 → SmartTranslate 中为当前引擎填写 API Key",
+    );
+    expect(zhErrorMessage(new NoKeyError())).toBe(NO_KEY_MESSAGE);
+    expect(zhErrorMessage(new NoKeyError("自定义"))).toBe("自定义");
+  });
 });
 
 describe("translateText 空密钥拦截", () => {
@@ -45,19 +66,18 @@ describe("translateText 空密钥拦截", () => {
     setSecret("smart-engine1", "");
   });
 
-  it("空密钥应抛 401 APIError 且不发请求", async () => {
+  it("空密钥应抛 NoKeyError(文案不变)且不发请求", async () => {
     await expect(translateText("hello")).rejects.toMatchObject({
-      name: "APIError",
-      statusCode: 401,
+      name: "NoKeyError",
     });
     await expect(translateText("hello")).rejects.toThrow(/API 密钥/);
+    await expect(translateText("hello")).rejects.toBeInstanceOf(NoKeyError);
   });
 
   it("纯空白密钥也应拦截并抛中文错误", async () => {
     setSecret("smart-engine1", "   ");
     await expect(translateText("hello")).rejects.toMatchObject({
-      name: "APIError",
-      statusCode: 401,
+      name: "NoKeyError",
     });
     await expect(translateText("hello")).rejects.toThrow(/API 密钥/);
   });

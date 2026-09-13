@@ -134,6 +134,68 @@ describe("createTranslateStore 状态流转", () => {
   });
 });
 
+describe("translate-store 取消与代际 signal", () => {
+  it("getSignal 返回当前代际 signal, 未 begin 过时为 undefined", () => {
+    const store = createTranslateStore();
+    expect(store.getSignal()).toBeUndefined();
+    store.begin("a", "e1", "E1");
+    const first = store.getSignal();
+    expect(first).toBeDefined();
+    expect(first!.aborted).toBe(false);
+    // 新 begin 换新控制器: signal 是新代际的
+    store.begin("b", "e2", "E2");
+    expect(store.getSignal()).toBeDefined();
+    expect(store.getSignal()).not.toBe(first);
+  });
+
+  it("新 begin 真实中止旧代际 signal(旧请求被取消而非后台走完)", () => {
+    const store = createTranslateStore();
+    store.begin("旧原文", "e1", "E1");
+    const oldSignal = store.getSignal();
+    expect(oldSignal!.aborted).toBe(false);
+    store.begin("新原文", "e2", "E2");
+    expect(oldSignal!.aborted).toBe(true);
+    // 新代际 signal 不受影响
+    expect(store.getSignal()!.aborted).toBe(false);
+  });
+
+  it("cancelCurrent: running 时中止当前 signal 并返回 true", () => {
+    const store = createTranslateStore();
+    expect(store.cancelCurrent()).toBe(false);
+    store.begin("hello", "e1", "E1");
+    const signal = store.getSignal();
+    expect(store.cancelCurrent()).toBe(true);
+    expect(signal!.aborted).toBe(true);
+  });
+
+  it("cancelCurrent: 非 running 态返回 false, 新一轮 running 恢复可取消", () => {
+    const store = createTranslateStore();
+    const gen = store.begin("hello", "e1", "E1");
+    store.finish(gen, "你好");
+    // done 态: 无在途请求可取消
+    expect(store.cancelCurrent()).toBe(false);
+    expect(store.getRecord().status).toBe("done");
+    // 新一轮 begin 回到 running: 再次可取消
+    store.begin("again", "e1", "E1");
+    expect(store.getRecord().status).toBe("running");
+    expect(store.cancelCurrent()).toBe(true);
+  });
+
+  it("代际令牌机制不受 abort 影响: 旧代际回调依旧被丢弃", () => {
+    const store = createTranslateStore();
+    const gen1 = store.begin("旧原文", "e1", "E1");
+    // 新 begin 中止旧代际(signal.aborted = true), 但 gen1 的回调失效逻辑不变
+    const gen2 = store.begin("新原文", "e2", "E2");
+    store.setPartial(gen2, "新进度");
+    store.setPartial(gen1, "旧进度");
+    store.fail(gen1, "旧失败");
+    const record = store.getRecord();
+    expect(record.result).toBe("新进度");
+    expect(record.status).toBe("running");
+    expect(record.errorMessage).toBe("");
+  });
+});
+
 describe("createPanelRegistry", () => {
   it("add 后 refreshAll 逐一调用, remove 后不再调用", async () => {
     const registry = createPanelRegistry();

@@ -9,6 +9,7 @@
  * Not retried:
  * - 401 Unauthorized
  * - 400 Bad Request
+ * - AbortError (用户主动取消, 取消语义下绝不再发请求)
  */
 
 export interface RetryConfig {
@@ -43,6 +44,17 @@ export class APIError extends Error {
   }
 }
 
+/**
+ * AbortError 识别(纯函数): 用户主动取消(AbortController.abort)时 fetch/
+ * reader.read 抛 DOMException(name="AbortError"); 部分环境/以 Error 模拟时
+ * name 同为 "AbortError"。用户取消绝不允许触发任何重试再发请求。
+ */
+export function isAbortError(e: unknown): boolean {
+  return (
+    e instanceof Error && (e as { name?: string }).name === "AbortError"
+  );
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   config: Partial<RetryConfig> = {}
@@ -59,6 +71,11 @@ export async function withRetry<T>(
       return await fn();
     } catch (error: any) {
       lastError = error;
+
+      // 用户主动取消(AbortError)绝不重试: 再发请求违背取消语义, 原样抛出
+      if (isAbortError(error)) {
+        throw error;
+      }
 
       // Don't retry on 401/400
       if (error instanceof APIError && error.statusCode) {

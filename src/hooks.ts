@@ -9,6 +9,7 @@ import { registerReaderUI, unregisterReaderUI } from "./ui/reader";
 import { registerItemMenu, registerShortcut } from "./ui/menus";
 import { registerSidebarShortcut } from "./ui/shortcuts";
 import { registerItemColumns } from "./ui/item-columns";
+import { registerInfoRows } from "./ui/info-rows";
 import { data, initData } from "./data";
 import { bindPrefs, getSettings } from "./engine/settings";
 import {
@@ -23,6 +24,7 @@ let unregisterMenu: () => void = () => {};
 let unregisterShortcut: () => void = () => {};
 let unregisterSidebarShortcut: () => void = () => {};
 let unregisterColumns: () => void = () => {};
+let unregisterInfoRows: () => void = () => {};
 
 export default {
   async onStartup() {
@@ -70,6 +72,13 @@ export default {
     } catch (e) {
       Zotero?.logError?.(e);
     }
+    // 条目面板 Info 区译文行(标题译文/摘要译文): ItemPaneManager 缺失
+    // (老版本)时内部静默跳过, 异常只记录不阻断启动
+    try {
+      unregisterInfoRows = registerInfoRows(Zotero, addonID);
+    } catch (e) {
+      Zotero?.logError?.(e);
+    }
     data.initialized = true;
   },
 
@@ -90,6 +99,7 @@ export default {
       unregisterShortcut,
       unregisterSidebarShortcut,
       unregisterColumns,
+      unregisterInfoRows,
     ]) {
       try {
         unload();

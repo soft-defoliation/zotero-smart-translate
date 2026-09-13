@@ -39,7 +39,12 @@ import {
 } from "../../engine/settings";
 import { translateText } from "../../data";
 import { copyText } from "../reader";
-import { zhErrorMessage } from "../../engine/errors";
+import {
+  CANCELLED_MESSAGE,
+  NO_KEY_MESSAGE,
+  zhErrorMessage,
+} from "../../engine/errors";
+import { canOpenPrefs, openPluginPrefs } from "../prefs";
 import type { Settings } from "../../types";
 
 /** 双框各自最小高度(px): 分隔比例 clamp 与 CSS min-height 双保险 */
@@ -305,8 +310,13 @@ export class SmartTranslatePanel extends PanelElementBase {
       }
     });
 
-    // 翻译按钮: idle/done 翻译, error 变重试(文案在 renderStatus 里联动)
+    // 翻译按钮: idle/done/error 翻译(文案在 renderStatus 里联动);
+    // running 时同一按钮变"停止", 点击中止当前代际的在途请求
     els.translate.addEventListener("click", () => {
+      if (getSharedStore().getRecord().status === "running") {
+        getSharedStore().cancelCurrent();
+        return;
+      }
       void this.runTranslation(els.src.value);
     });
 
@@ -415,7 +425,7 @@ export class SmartTranslatePanel extends PanelElementBase {
   /**
    * 翻译统一入口: 置 running(取新代际令牌) → translateText(raw, onProgress) →
    * done/error 更新 store → render。不做互斥: 多路翻译允许并存, 新 begin 使
-   * 旧代际的全部回调作废, 界面永远跟随最近一次翻译(旧请求自然跑完, 结果丢弃)。
+   * 旧代际的全部回调作废并真实中止旧请求, 界面永远跟随最近一次翻译。
    */
   private async runTranslation(raw: string): Promise<void> {
     const text = raw.trim();
@@ -425,6 +435,9 @@ export class SmartTranslatePanel extends PanelElementBase {
     this.syncSettings();
     const engine = getActiveEngine();
     const gen = store.begin(text, engine?.id ?? "", engine?.name ?? "");
+    // begin 建好本代际控制器后取走 signal: "停止"按钮经 cancelCurrent
+    // abort 它, 在途 fetch 以 AbortError 拒绝并被 data 层转为取消
+    const signal = store.getSignal();
     this.render();
     try {
       const result = await translateText(
@@ -439,6 +452,7 @@ export class SmartTranslatePanel extends PanelElementBase {
             store.resolveEngine(gen, engineId, engineName, failover);
             this.render();
           },
+          signal,
         },
       );
       store.finish(gen, result);
@@ -482,6 +496,8 @@ export class SmartTranslatePanel extends PanelElementBase {
     const els = this.els;
     if (!els) return;
     const time = formatTime(record.updatedAt);
+    // "打开设置"入口随错误态增减(仅未配置密钥错误时出现)
+    this.syncOpenPrefsButton(record);
     switch (record.status) {
       case "running":
         els.dot.hidden = false;
@@ -498,9 +514,15 @@ export class SmartTranslatePanel extends PanelElementBase {
         break;
       case "error":
         els.dot.hidden = true;
-        els.statusText.textContent = `⚠ 翻译失败: ${record.errorMessage}`;
-        // 完整错误放悬停 title, 状态行只显示一句话
-        els.status.setAttribute("title", record.errorMessage);
+        if (record.errorMessage === CANCELLED_MESSAGE) {
+          // 用户主动取消: 中性文案呈现, 不按错误样式渲染(无 ⚠ 与悬停 title)
+          els.statusText.textContent = `${CANCELLED_MESSAGE} · ${time}`;
+          els.status.removeAttribute("title");
+        } else {
+          els.statusText.textContent = `⚠ 翻译失败: ${record.errorMessage}`;
+          // 完整错误放悬停 title, 状态行只显示一句话
+          els.status.setAttribute("title", record.errorMessage);
+        }
         break;
       default:
         els.dot.hidden = true;
@@ -508,12 +530,45 @@ export class SmartTranslatePanel extends PanelElementBase {
         els.status.removeAttribute("title");
         break;
     }
+    // running 时同一按钮变"停止"(点击经 cancelCurrent 中止在途请求)
     els.translate.textContent =
       record.status === "running"
-        ? "翻译中…"
+        ? "停止"
         : record.status === "error"
           ? "重试"
           : "翻译";
+  }
+
+  /**
+   * "打开设置"小按钮(st-openprefs): 仅未配置密钥错误时挂在状态行错误文案旁。
+   * store 只透传字符串, 以 NoKeyError 的固定文案(NO_KEY_MESSAGE)识别;
+   * openPreferences API 缺失或 pane 未注册时(canOpenPrefs=false)不渲染。
+   */
+  private syncOpenPrefsButton(record: TranslateRecord): void {
+    const els = this.els;
+    if (!els) return;
+    const existing = els.status.querySelector(".st-openprefs");
+    const wanted =
+      record.status === "error" &&
+      record.errorMessage === NO_KEY_MESSAGE &&
+      canOpenPrefs();
+    if (wanted && !existing) {
+      const button = this.ownerDocument.createElement("button");
+      button.className = "st-openprefs";
+      button.setAttribute("type", "button");
+      button.textContent = "打开设置";
+      // 控件不设 border/background/color, 走原生主题(与面板设计口径一致)
+      button.setAttribute(
+        "style",
+        "font-size:11px;padding:1px 6px;cursor:pointer;flex:none;",
+      );
+      button.addEventListener("click", () => {
+        openPluginPrefs();
+      });
+      els.status.appendChild(button);
+    } else if (!wanted && existing) {
+      existing.remove();
+    }
   }
 
   /** 按钮 disabled 态: 翻译按 running+原文有无, 复制按对应内容有无 */
@@ -523,7 +578,8 @@ export class SmartTranslatePanel extends PanelElementBase {
     const status: TranslateStatus = getSharedStore().getRecord().status;
     const hasSrc = els.src.value.trim().length > 0;
     const hasDst = els.dst.value.trim().length > 0;
-    els.translate.disabled = status === "running" || !hasSrc;
+    // running 时按钮是"停止", 必须保持可点(取消入口); 其余状态维持原语义
+    els.translate.disabled = status === "running" ? false : !hasSrc;
     const [srcBtn, dstBtn, bothBtn] = els.copyButtons;
     srcBtn.disabled = !hasSrc;
     dstBtn.disabled = !hasDst;
