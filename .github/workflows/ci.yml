@@ -17,10 +17,11 @@ jobs:
       # 拉取源码
       - uses: actions/checkout@v4
 
-      # 安装 Node 22（npm registry 用默认源）
+      # 安装 Node 26：与本地开发环境(npm 12)一致 —— lockfile 由 npm 12 生成,
+      # npm 10(node 22 自带)执行 npm ci 会触发 Arborist "edgesOut" 空指针 bug
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
 
       # 按 package-lock.json 锁定版本安装依赖（可复现，不用 npm install）
       - run: npm ci
