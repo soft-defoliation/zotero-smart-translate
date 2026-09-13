@@ -7,6 +7,8 @@ declare const Zotero: any;
 
 import { registerReaderUI, unregisterReaderUI } from "./ui/reader";
 import { registerItemMenu, registerShortcut } from "./ui/menus";
+import { registerSidebarShortcut } from "./ui/shortcuts";
+import { registerItemColumns } from "./ui/item-columns";
 import { data, initData } from "./data";
 import { bindPrefs, getSettings } from "./engine/settings";
 import {
@@ -19,6 +21,8 @@ import { registerSidebarSection } from "./ui/panel/register";
 let unregisterReader: () => void = () => {};
 let unregisterMenu: () => void = () => {};
 let unregisterShortcut: () => void = () => {};
+let unregisterSidebarShortcut: () => void = () => {};
+let unregisterColumns: () => void = () => {};
 
 export default {
   async onStartup() {
@@ -35,21 +39,34 @@ export default {
       bridge.panels ??= createPanelRegistry();
     }
     const addonID = Zotero.SmartTranslate?.id ?? "smarttranslate@fengqiu.dev";
-    // 三个 UI 入口都登记卸载函数(reader 为模块级导出函数, menus 为返回值),
-    // 停用/重载时在 onShutdown 逐项回收
+    // 五个 UI 入口都登记卸载函数(reader 为模块级导出函数, 其余为返回值),
+    // 停用/重载时在 onShutdown 逐项回收; 菜单含标题/摘要两项, 快捷键触发标题翻译,
+    // Alt+B 切换双语侧栏(仅 reader 标签生效)
     registerReaderUI(Zotero, addonID);
     unregisterReader = unregisterReaderUI;
-    unregisterMenu = registerItemMenu(Zotero, () => {
-      // 展示责任已收进 translateTitleAbstract(右下角结果面板), 回调只负责触发
-      void import("./ui/menus").then((m) => m.translateTitleAbstract(Zotero));
-    });
+    unregisterMenu = registerItemMenu(Zotero);
     unregisterShortcut = registerShortcut(Zotero, () => {
-      void import("./ui/menus").then((m) => m.translateTitleAbstract(Zotero));
+      void import("./ui/menus").then((m) =>
+        m.translateItemField(Zotero, "title"),
+      );
     });
+    // Alt+B 侧栏快捷键: 注册失败只记录不阻断启动(同 registerItemColumns 接线风格)
+    try {
+      unregisterSidebarShortcut = registerSidebarShortcut(Zotero);
+    } catch (e) {
+      Zotero?.logError?.(e);
+    }
     // 条目面板侧栏 section: ItemPaneManager 缺失(老版本)时内部跳过,
     // 异常只记录不阻断启动
     try {
       registerSidebarSection(Zotero, addonID);
+    } catch (e) {
+      Zotero?.logError?.(e);
+    }
+    // 条目列表自定义列(标题译文/摘要译文): ItemTreeManager 缺失(老版本)
+    // 时内部静默跳过, 异常只记录不阻断启动
+    try {
+      unregisterColumns = registerItemColumns(Zotero, addonID);
     } catch (e) {
       Zotero?.logError?.(e);
     }
@@ -65,9 +82,15 @@ export default {
   },
 
   async onShutdown() {
-    // UI 卸载: reader 监听/菜单/快捷键逐项回收, 各自 try/catch 兜底,
-    // 单个失败不阻断其余清理, 也不阻断下方 alive 置位
-    for (const unload of [unregisterReader, unregisterMenu, unregisterShortcut]) {
+    // UI 卸载: reader 监听/菜单/快捷键/侧栏快捷键/条目列逐项回收,
+    // 各自 try/catch 兜底, 单个失败不阻断其余清理, 也不阻断下方 alive 置位
+    for (const unload of [
+      unregisterReader,
+      unregisterMenu,
+      unregisterShortcut,
+      unregisterSidebarShortcut,
+      unregisterColumns,
+    ]) {
       try {
         unload();
       } catch (e) {

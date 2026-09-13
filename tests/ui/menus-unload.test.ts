@@ -93,31 +93,32 @@ function makeFakeZotero(win: ReturnType<typeof makeFakeWin>) {
 describe("registerItemMenu 卸载函数", () => {
   it("popupshowing 创建菜单项后, 卸载应移除监听并清掉菜单项", () => {
     const win = makeFakeWin();
-    const unregister = registerItemMenu(makeFakeZotero(win), () => {});
+    const unregister = registerItemMenu(makeFakeZotero(win));
     expect(typeof unregister).toBe("function");
     expect(win.menu.listenerCount("popupshowing")).toBe(1);
 
-    // 模拟弹开菜单: 两项动态创建
+    // 模拟弹开菜单: 四项动态创建(标题/摘要/阅读助手/批量导出)
     win.menu.fire("popupshowing");
-    expect(
-      win.menu.children.filter((c) => c.className === "smarttranslate-menuitem")
-        .length,
-    ).toBe(1);
-    expect(
-      win.menu.children.filter(
-        (c) => c.className === "smarttranslate-reading-menuitem",
-      ).length,
-    ).toBe(1);
+    for (const cls of [
+      "smarttranslate-title-menuitem",
+      "smarttranslate-abstract-menuitem",
+      "smarttranslate-reading-menuitem",
+      "smarttranslate-batch-export-menuitem",
+    ]) {
+      expect(
+        win.menu.children.filter((c) => c.className === cls).length,
+      ).toBe(1);
+    }
 
     unregister();
     expect(win.menu.listenerCount("popupshowing")).toBe(0);
-    // 两个菜单项都被 remove
+    // 四个菜单项都被 remove
     expect(win.menu.children.every((c) => c.removed)).toBe(true);
   });
 
   it("未弹开过菜单时卸载不抛错", () => {
     const win = makeFakeWin();
-    const unregister = registerItemMenu(makeFakeZotero(win), () => {});
+    const unregister = registerItemMenu(makeFakeZotero(win));
     expect(() => unregister()).not.toThrow();
   });
 });
