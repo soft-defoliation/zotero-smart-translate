@@ -38,6 +38,11 @@ import {
   PANEL_SPLIT_RATIO_MAX,
 } from "../../engine/settings";
 import { translateText } from "../../data";
+import {
+  clearHistory,
+  getHistory,
+  loadHistoryFromPrefs,
+} from "../../engine/history";
 import { copyText } from "../reader";
 import {
   CANCELLED_MESSAGE,
@@ -130,6 +135,27 @@ const PANEL_TEMPLATE = `
     display: flex; align-items: center; gap: 4px; flex: none;
   }
   smarttranslate-panel .st-copy { font-size: 11px; padding: 1px 6px; }
+  smarttranslate-panel .st-history {
+    display: flex; flex-direction: column; gap: 4px; flex: none;
+  }
+  smarttranslate-panel .st-history-head {
+    display: flex; align-items: center; gap: 4px; height: 20px;
+  }
+  smarttranslate-panel .st-history-toggle,
+  smarttranslate-panel .st-history-clear { font-size: 11px; padding: 1px 6px; flex: none; }
+  smarttranslate-panel .st-history-list {
+    display: flex; flex-direction: column; gap: 2px;
+    max-height: 120px; overflow-y: auto; font-size: 11px;
+  }
+  smarttranslate-panel .st-history-item {
+    cursor: pointer; padding: 2px 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    opacity: 0.75;
+  }
+  smarttranslate-panel .st-history-item:hover { opacity: 1; }
+  smarttranslate-panel .st-history-empty { padding: 2px 4px; opacity: 0.6; }
+  smarttranslate-panel .st-history-clear[hidden],
+  smarttranslate-panel .st-history-list[hidden] { display: none; }
   @keyframes st-pulse {
     0%, 100% { opacity: 0.25; }
     50% { opacity: 0.8; }
@@ -160,6 +186,13 @@ const PANEL_TEMPLATE = `
       <html:button class="st-copy" type="button" data-copy="both">复制全部</html:button>
     </html:div>
   </html:div>
+  <html:div class="st-history">
+    <html:div class="st-history-head">
+      <html:button class="st-history-toggle" type="button">历史</html:button>
+      <html:button class="st-history-clear" type="button" hidden="hidden">清空</html:button>
+    </html:div>
+    <html:div class="st-history-list" hidden="hidden"></html:div>
+  </html:div>
 </html:div>
 `;
 
@@ -178,6 +211,9 @@ interface PanelElements {
   dot: HTMLElement;
   actions: HTMLElement;
   copyButtons: HTMLButtonElement[];
+  historyToggle: HTMLButtonElement;
+  historyClear: HTMLButtonElement;
+  historyList: HTMLElement;
 }
 
 // XUL 命名空间的自定义元素必须继承窗口全局的 XULElementBase(Zotero 官方模式,
@@ -224,6 +260,10 @@ export class SmartTranslatePanel extends PanelElementBase {
       this.wireEvents();
       this.syncSettings();
       this.render();
+      // 历史区处于展开态时重建列表(模板初始为收起, 此处防御重连场景)
+      if (!this.els.historyList.hidden) {
+        this.renderHistory();
+      }
     }
   }
 
@@ -293,6 +333,9 @@ export class SmartTranslatePanel extends PanelElementBase {
       copyButtons: Array.from(
         this.querySelectorAll<HTMLButtonElement>(".st-copy"),
       ),
+      historyToggle: q<HTMLButtonElement>(".st-history-toggle"),
+      historyClear: q<HTMLButtonElement>(".st-history-clear"),
+      historyList: q<HTMLElement>(".st-history-list"),
     };
   }
 
@@ -334,6 +377,14 @@ export class SmartTranslatePanel extends PanelElementBase {
       const btn = target?.closest?.(".st-copy") as HTMLButtonElement | null;
       if (!btn || btn.disabled) return;
       this.onCopy(btn.dataset.copy ?? "");
+    });
+
+    // 历史区: toggle 展开/收起(展开时重读共享历史并重建列表); 清空按钮
+    els.historyToggle.addEventListener("click", () => this.toggleHistory());
+    els.historyClear.addEventListener("click", () => {
+      clearHistory();
+      this.renderHistory();
+      this.collapseHistory();
     });
   }
 
@@ -568,6 +619,69 @@ export class SmartTranslatePanel extends PanelElementBase {
       els.status.appendChild(button);
     } else if (!wanted && existing) {
       existing.remove();
+    }
+  }
+
+  /** 历史 toggle: 展开时重读共享历史并重建列表, 收起时连带隐藏清空按钮 */
+  private toggleHistory(): void {
+    const els = this.els;
+    if (!els) return;
+    if (els.historyList.hidden) {
+      // panel bundle 与主 bundle 各有一份 history 模块态: 展开时经共享桥
+      // 重读一次再渲染, 与 settings 的"用前重读"策略同一取舍(重读以共享
+      // 实例为准, 缺 pref 时保持内存态)
+      loadHistoryFromPrefs();
+      this.renderHistory();
+      els.historyList.hidden = false;
+      els.historyClear.hidden = false;
+    } else {
+      this.collapseHistory();
+    }
+  }
+
+  /** 收起历史区: 列表与清空按钮一并隐藏 */
+  private collapseHistory(): void {
+    const els = this.els;
+    if (!els) return;
+    els.historyList.hidden = true;
+    els.historyClear.hidden = true;
+  }
+
+  /**
+   * 重建历史列表: 每项 "source 前 40 字符(超长加 …) · HH:MM", 完整原文与
+   * 译文放悬停 title; 点击把 source/result 回填双框(等价手动粘贴, 不自动
+   * 触发翻译)。空历史给一行占位文案。
+   */
+  private renderHistory(): void {
+    const els = this.els;
+    if (!els) return;
+    els.historyList.textContent = "";
+    const items = getHistory();
+    if (items.length === 0) {
+      const empty = this.ownerDocument.createElement("div");
+      empty.className = "st-history-empty";
+      empty.textContent = "暂无翻译历史";
+      els.historyList.appendChild(empty);
+      return;
+    }
+    for (const item of items) {
+      const row = this.ownerDocument.createElement("div");
+      row.className = "st-history-item";
+      const preview =
+        item.source.length > 40
+          ? `${item.source.slice(0, 40)}…`
+          : item.source;
+      row.textContent = `${preview} · ${formatTime(item.time)}`;
+      // 完整原文+译文放悬停 title(---- 分隔与"复制全部"格式一致)
+      row.setAttribute("title", `${item.source}\n----\n${item.result}`);
+      row.addEventListener("click", () => {
+        const panelEls = this.els;
+        if (!panelEls) return;
+        panelEls.src.value = item.source;
+        panelEls.dst.value = item.result;
+        this.updateControlStates();
+      });
+      els.historyList.appendChild(row);
     }
   }
 

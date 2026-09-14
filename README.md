@@ -2,6 +2,9 @@
 
 AI-powered Zotero reading assistant with:
 - 🔤 **Translation**: Multi-engine (OpenAI-compatible), streaming, auto failover, session caching
+- 🕘 **Translation history**: the last 100 translations listed at the bottom of the sidebar; click one to backfill, kept across restarts
+- 📖 **Glossary**: 20 built-in ferroelectric/high-pressure seed terms plus a user-defined term library
+- 🎨 **Translation style presets**: 标准 (Standard) / 学术 (Academic) / 直译 (Literal) / 流畅 (Fluent) / 自定义 (Custom prompt)
 - ⏹️ **Cancellation**: "停止" (Stop) button while translating, in both the selection popup and the sidebar; partial output kept with a neutral "已取消" (cancelled) status
 - 🧭 **Setup guidance**: "打开设置" (Open Preferences) button next to missing-API-key errors, one click to the plugin settings page
 - 📑 **Title/Abstract to Item**: Translate title/abstract and persist to item Extra fields, with item-list columns and Info-pane rows
@@ -14,10 +17,10 @@ AI-powered Zotero reading assistant with:
 
 ## Status
 
-**Version**: 1.2.0  
+**Version**: 1.3.0  
 **Zotero**: 7.0 – 10.*  
 **Build**: ✅ `npm run build` → `.scaffold/build/smart-translate-for-zotero.xpi`  
-**Tests**: ✅ 241 passing (`npm test`)  
+**Tests**: ✅ 276 passing (`npm test`)  
 **TypeScript**: ✅ `tsc --noEmit` clean
 
 ## Quick Start
@@ -55,6 +58,13 @@ npm test
 - Exponential backoff retry (429/1305/5xx)
 - Chinese-dominant selections are auto-skipped (no request sent)
 
+### Translation style presets
+- "翻译风格" (Translation style) dropdown in the "翻译行为" (Translation behavior) prefs group: 标准 (Standard, default) / 学术 (Academic) / 直译 (Literal) / 流畅 (Fluent) / 自定义 (Custom)
+- 标准 (Standard) appends no style instruction and keeps the exact previous translation behavior; 学术/直译/流畅 (Academic/Literal/Fluent) append a fixed style directive
+- 自定义 (Custom) reveals a prompt box for your own style instruction; an empty one falls back to standard behavior
+- The style affects selection translation and title/abstract translation; the reading assistant (summary/innovation extraction) is not affected
+- Switching away from 自定义 (Custom) and back keeps your custom prompt; saving applies immediately (no restart)
+
 ### Session-level caching
 - Whole-segment LRU cache (100 entries): re-selecting the same text returns instantly with 0 requests
 - Sentence-level memory (500 entries): multi-sentence text is translated sentence by sentence; repeated sentences across the session cost 0 requests
@@ -86,6 +96,13 @@ npm test
 - Draggable divider; font family / font size / line-height settings
 - Copy source / translation / all
 
+### Translation history
+- A "历史" (History) section at the bottom of the bilingual sidebar panel, collapsed by default; clicking it lists the last 100 translations
+- Each row shows the first 40 characters of the source text and the time; the full source + translation is available as hover text
+- Clicking a row backfills the source/translation into the dual boxes (no automatic re-translation)
+- "清空" (Clear) empties the list; records are persisted to prefs and survive Zotero restarts
+- Sources longer than 5000 characters are not recorded; batch export does not write to history
+
 ### Reading assistant
 - Full-text summary (map-reduce over sections), innovation extraction, method structuring (ferroelectric schema)
 - Results are written to child notes
@@ -94,7 +111,10 @@ npm test
 - Multi-select items → bilingual Markdown written to a folder on disk
 
 ### Glossary
-- Ferroelectric / high-pressure domain with 20+ seed terms injected into translation
+- Built-in ferroelectric / high-pressure word list (20 seed terms) injected into translation
+- User-defined term library in the prefs "术语库" (Glossary) group: one entry per line as `source = translation`, lines starting with `#` are comments
+- Entries with the same name (case-insensitive) override the built-in seed terms; the rest are appended to the list
+- Saving takes effect immediately (no restart); malformed lines (missing `=` or an empty side) are skipped without blocking the others
 
 ### Shortcuts
 - Global `Ctrl+Shift+T`: translate the selected item's title
@@ -118,6 +138,7 @@ src/
 │   ├── cache.ts            # Session LRU cache (100 segments + 500 sentences)
 │   ├── sentence-memory.ts  # Sentence split / numbered requests / assembly (pure functions)
 │   ├── translate-store.ts  # Recent-translations store + panel registry (shared across bundles)
+│   ├── history.ts          # Translation history (last 100 records, persisted to prefs)
 │   ├── extra-fields.ts     # Extra-field line format parse/serialize + item read/write
 │   ├── glossary.ts         # Ferroelectric/high-pressure glossary
 │   ├── term-memory.ts      # One-click add-to-glossary term memory

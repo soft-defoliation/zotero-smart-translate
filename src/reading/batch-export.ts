@@ -53,7 +53,7 @@ export interface BatchExportOptions {
   /** 落盘, 默认 Zotero.File.putContentsAsync */
   writeFile?: (path: string, content: string) => Promise<void>;
   /** 单块翻译, 默认 translateText(关闭句子记忆: 导出块含 "## 标题" 结构标记,
-   *  编号路径会破坏格式) */
+   *  编号路径会破坏格式; 关闭历史记录: 批量块短时间大量入列, 不刷屏历史区) */
   translate?: (text: string) => Promise<string>;
 }
 
@@ -106,7 +106,10 @@ export async function runBatchExport(
 ): Promise<void> {
   const pick = opts.pickFolder ?? (() => defaultPickFolder(Zotero));
   const write = opts.writeFile ?? ((path, content) => defaultWriteFile(Zotero, path, content));
-  const translate = opts.translate ?? ((t: string) => translateText(t, undefined, { disableMemory: true }));
+  const translate =
+    opts.translate ??
+    ((t: string) =>
+      translateText(t, undefined, { disableMemory: true, recordHistory: false }));
 
   let pw: any = null;
   let summaryLine: any = null;

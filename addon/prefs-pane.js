@@ -7,6 +7,7 @@
  * v2: 新增字体三参数/自动翻译/源语言下拉/目标语言下拉;
  * v3: 新增写回模式下拉(off/note/note-bilingual, 枚举校验对齐主线程);
  * v4: 新增自动故障转移开关(autoFailover, 布尔校验对齐主线程);
+ * v5: 新增翻译风格预设(st-style/st-customprompt)与用户术语库(st-glossary);
  * 数字输入统一 NaN 防御并 clamp 到与 settings.ts 一致的区间后再写。
  */
 var SmartTranslatePane = {
@@ -52,6 +53,10 @@ var SmartTranslatePane = {
   // 写回模式合法枚举(与 src/engine/settings.ts 的 WRITEBACK_MODES 对齐),
   // 未知值一律回落 off, 避免把面板里的脏数据写进 settings 后主线程无法识别
   WRITEBACK_MODES: ["off", "note", "note-bilingual"],
+
+  // 翻译风格合法枚举(与 src/engine/settings.ts 的 TRANSLATE_STYLES 对齐),
+  // 未知值一律回落 standard
+  TRANSLATE_STYLES: ["standard", "academic", "literal", "fluent", "custom"],
 
   // 惰性补齐缺失的引擎对象与 activeEngineId: 首装时 pref 为空串,
   // readJson 回退 {}, 若不补骨架, persist 会静默丢弃用户填写的配置
@@ -107,6 +112,13 @@ var SmartTranslatePane = {
     if (this.WRITEBACK_MODES.indexOf(s.writebackMode) === -1) {
       s.writebackMode = "off";
     }
+    // 翻译风格: 枚举外(含旧版缺失/非字符串)一律补 standard, 与主线程同判据
+    if (this.TRANSLATE_STYLES.indexOf(s.translateStyle) === -1) {
+      s.translateStyle = "standard";
+    }
+    // 自定义风格 prompt 与用户术语表: 字符串字段, 缺失/非法类型补空串(允许合法空值)
+    if (typeof s.customPrompt !== "string") s.customPrompt = "";
+    if (typeof s.userGlossary !== "string") s.userGlossary = "";
   },
 
   // 读取 JSON pref, 坏数据/空值回退 fallback
@@ -167,6 +179,9 @@ var SmartTranslatePane = {
       "st-skipchinese",
       "st-autofailover",
       "st-writeback",
+      "st-style",
+      "st-customprompt",
+      "st-glossary",
     ]) {
       document.getElementById(id).addEventListener("change", () => this.persist());
     }
@@ -174,6 +189,10 @@ var SmartTranslatePane = {
     document
       .getElementById("st-fontfamily")
       .addEventListener("change", () => this.updateFontCustomVisibility());
+    // 翻译风格切到 custom 时展开自定义 prompt 行, 切走时收起
+    document
+      .getElementById("st-style")
+      .addEventListener("change", () => this.updateStylePromptVisibility());
   },
 
   selectedEngineKey() {
@@ -187,6 +206,14 @@ var SmartTranslatePane = {
     const display = isCustom ? "" : "none";
     document.getElementById("st-fontcustom-label").style.display = display;
     document.getElementById("st-fontcustom").style.display = display;
+  },
+
+  // 翻译风格选 custom 时显示自定义 prompt 行(label+textarea 同步切换 display), 否则隐藏
+  updateStylePromptVisibility() {
+    const isCustom = document.getElementById("st-style").value === "custom";
+    const display = isCustom ? "" : "none";
+    document.getElementById("st-customprompt-label").style.display = display;
+    document.getElementById("st-customprompt").style.display = display;
   },
 
   // select 兼容: 存储值不在既有选项中时动态补一个同值选项(如旧数据的目标语言),
@@ -255,6 +282,15 @@ var SmartTranslatePane = {
     const writebackSelect = document.getElementById("st-writeback");
     writebackSelect.value = this.settings.writebackMode;
     if (!writebackSelect.value) writebackSelect.value = "off";
+    // 翻译风格: 同写回模式口径, 存量值已由 ensureScalarDefaults 收敛为合法枚举
+    const styleSelect = document.getElementById("st-style");
+    styleSelect.value = this.settings.translateStyle ?? "standard";
+    if (!styleSelect.value) styleSelect.value = "standard";
+    this.updateStylePromptVisibility();
+    document.getElementById("st-customprompt").value =
+      this.settings.customPrompt ?? "";
+    document.getElementById("st-glossary").value =
+      this.settings.userGlossary ?? "";
   },
 
   // 从控件读回并整体写回 settings 与 secretObj
@@ -290,6 +326,12 @@ var SmartTranslatePane = {
     // 写回模式: 下拉值即最终值(非法值已由 ensureScalarDefaults 收敛)
     this.settings.writebackMode =
       document.getElementById("st-writeback").value || "off";
+    // 翻译风格与术语库: 下拉/文本域值即最终值(枚举收敛与坏行解析归主线程)
+    this.settings.translateStyle =
+      document.getElementById("st-style").value || "standard";
+    this.settings.customPrompt =
+      document.getElementById("st-customprompt").value;
+    this.settings.userGlossary = document.getElementById("st-glossary").value;
     Zotero.Prefs.set("smarttranslate.settings", JSON.stringify(this.settings));
     Zotero.Prefs.set("smarttranslate.secretObj", JSON.stringify(this.secrets));
     // 通知主线程立即重载设置, 保存后无需重启 Zotero;

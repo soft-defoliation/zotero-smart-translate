@@ -10,8 +10,9 @@ import { registerItemMenu, registerShortcut } from "./ui/menus";
 import { registerSidebarShortcut } from "./ui/shortcuts";
 import { registerItemColumns } from "./ui/item-columns";
 import { registerInfoRows } from "./ui/info-rows";
-import { data, initData } from "./data";
+import { data, initData, rebuildGlossary } from "./data";
 import { bindPrefs, getSettings } from "./engine/settings";
+import { loadHistoryFromPrefs } from "./engine/history";
 import {
   createPanelRegistry,
   createTranslateStore,
@@ -31,6 +32,13 @@ export default {
     // 持久化地基: 启动时绑定 Zotero.Prefs, 缺失则保持内存态
     if (Zotero?.Prefs) bindPrefs(Zotero.Prefs);
     initData(getSettings());
+    // 翻译历史: 启动时从 pref 恢复(坏数据静默裁剪, Prefs 缺失时内部 no-op);
+    // 失败只记录不阻断启动, 与其他启动项同一兜底风格
+    try {
+      loadHistoryFromPrefs();
+    } catch (e) {
+      Zotero?.logError?.(e);
+    }
     // 双 bundle 共享桥: 主 bundle 启动时把 store/panels 挂到 Zotero 全局
     // 对象, panel bundle(主窗口作用域)经 getSharedStore/getSharedPanels
     // 代理到同一实例, 规避两份 bundle 各自模块态导致划词与侧栏数据不同步
@@ -115,5 +123,7 @@ export default {
   // bindPrefs 幂等且自带解析容错, 守卫 Prefs 缺失时静默跳过保持内存态
   async onPrefsChanged() {
     if (Zotero?.Prefs) bindPrefs(Zotero.Prefs);
+    // 术语库即时生效: 按最新 userGlossary 重建生效词表(坏行不阻断, 合法行生效)
+    rebuildGlossary();
   },
 };

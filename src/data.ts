@@ -11,6 +11,8 @@ import {
   GlossaryManager,
   FERROELECTRIC_GLOSSARY,
   buildGlossaryPrompt,
+  mergeGlossaries,
+  parseUserGlossary,
   residualTerms,
 } from "./engine/glossary";
 import {
@@ -31,7 +33,8 @@ import {
   splitSentences,
   stripNumberingForDisplay,
 } from "./engine/sentence-memory";
-import type { EngineConfig, Settings } from "./types";
+import { recordHistory } from "./engine/history";
+import type { EngineConfig, Settings, TranslateStyle } from "./types";
 
 export const data = {
   alive: true,
@@ -40,9 +43,61 @@ export const data = {
   glossary: new GlossaryManager(),
 };
 
+/**
+ * 翻译风格预设的附加指令文案(纯映射): standard 为空串 = 不追加任何指令,
+ * 其余各风格给出专业明确的中文要求。custom 走 customPrompt, 不在此表。
+ */
+const STYLE_INSTRUCTIONS: Record<
+  Exclude<TranslateStyle, "standard" | "custom">,
+  string
+> = {
+  academic:
+    "翻译风格要求: 学术规范。术语必须准确并采用所属领域的标准中文译名; 句式严谨, 完整保留原文的逻辑关系; 保留原文的被动语态与专业表达方式, 不做口语化改写。",
+  literal:
+    "翻译风格要求: 直译。逐句忠实原文, 尽量保持原文的语序与句子结构; 不意译、不增删信息、不改变修辞; 仅在直译会产生歧义时做最小限度的调整。",
+  fluent:
+    "翻译风格要求: 流畅自然。以目标语言的表达习惯为准, 可适当调整语序、拆分或合并句子, 使译文通顺易读; 忠实原文大意, 但不逐字逐句硬译。",
+};
+
+/**
+ * 纯函数: 风格枚举 + 自定义 prompt → 附加翻译指令。
+ * - standard → ""(调用方据空串跳过拼接, 保持历史行为);
+ * - academic/literal/fluent → 对应风格指令文案;
+ * - custom → customPrompt trim 后原文, 空白回落 ""(等同 standard);
+ * - 未知枚举(脏数据)防御性回落 ""。
+ */
+export function buildStyleInstruction(
+  style: TranslateStyle,
+  customPrompt: string,
+): string {
+  if (style === "custom") {
+    return typeof customPrompt === "string" ? customPrompt.trim() : "";
+  }
+  // standard 及未知枚举(脏数据)在此返回空串, 调用方据空串跳过拼接
+  if (style === "standard") return "";
+  return STYLE_INSTRUCTIONS[style] ?? "";
+}
+
+/**
+ * 重建生效词表: 内置铁电种子 + 用户自定义术语(settings.userGlossary 解析出的
+ * 合法行)经 mergeGlossaries 合并后整体重灌 data.glossary(先 reset 再 addMultiple)。
+ * 用户词表存在坏行(errorLines > 0)不阻断: 合法行照常生效, 坏行由用户在设置页修正。
+ * initData 与 onPrefsChanged(设置保存后)都会调用, 保证改术语无需重启即生效。
+ */
+export function rebuildGlossary(settings: Settings = getSettings()): void {
+  // 运行时防御: 测试/旧数据可能传缺字段对象, 非字符串按空词表处理
+  const raw =
+    typeof settings.userGlossary === "string" ? settings.userGlossary : "";
+  const { entries } = parseUserGlossary(raw);
+  const merged = mergeGlossaries(FERROELECTRIC_GLOSSARY, entries);
+  data.glossary.reset();
+  data.glossary.addMultiple(merged);
+}
+
 export function initData(settings: Settings): void {
   data.settings = settings;
-  data.glossary.addMultiple(FERROELECTRIC_GLOSSARY);
+  // 重建(而非追加)生效词表: 用传入的 settings 解析用户术语, 重复调用幂等
+  rebuildGlossary(settings);
 }
 
 /**
@@ -306,6 +361,7 @@ async function attemptTranslateWithEngine(
   onProgress?: (partial: string) => void,
   disableMemory = false,
   signal?: AbortSignal,
+  recordHistoryEnabled = true,
 ): Promise<string> {
   // 语言对取自设置单例, 消除硬编码死设置
   const settings = getSettings();
@@ -330,6 +386,16 @@ async function attemptTranslateWithEngine(
   const glossaryEntries = data.glossary.matchAll(text);
   const glossaryInstruction =
     glossaryEntries.length > 0 ? buildGlossaryPrompt(glossaryEntries) : "";
+  // 风格指令: 按当前预设生成(standard 为空串 = 不追加); 与术语对照表同级拼接,
+  // 一并透传给句子记忆编号请求与整段请求, 保证两条翻译路径风格一致。
+  // 阅读助手 completeText 路径不经过此处, 不受风格影响
+  const styleInstruction = buildStyleInstruction(
+    settings.translateStyle,
+    typeof settings.customPrompt === "string" ? settings.customPrompt : "",
+  );
+  const combinedInstruction = [glossaryInstruction, styleInstruction]
+    .filter(Boolean)
+    .join("\n");
   // 句子级记忆: 多句文本按句查缓存; 全命中 0 请求, 部分命中只发缺失句。
   // 导出等结构化场景由调用方传 disableMemory 关闭(编号路径会破坏 "## 标题" 类标记)
   const memory = disableMemory
@@ -338,7 +404,7 @@ async function attemptTranslateWithEngine(
         engine,
         service,
         text,
-        glossaryInstruction,
+        combinedInstruction,
         onProgress,
         signal,
       );
@@ -357,7 +423,7 @@ async function attemptTranslateWithEngine(
         sourceLang: settings.sourceLanguage,
         targetLang: settings.targetLanguage,
         onProgress,
-        glossaryInstruction,
+        glossaryInstruction: combinedInstruction,
         signal,
       });
       finalText = result.text;
@@ -374,7 +440,7 @@ async function attemptTranslateWithEngine(
           sourceLang: settings.sourceLanguage,
           targetLang: settings.targetLanguage,
           onProgress,
-          glossaryInstruction: `${glossaryInstruction}\n注意: 上次译文中以下术语未按对照表翻译: ${residual.join(", ")}，本次必须使用表中译名`,
+          glossaryInstruction: `${combinedInstruction}\n注意: 上次译文中以下术语未按对照表翻译: ${residual.join(", ")}，本次必须使用表中译名`,
           signal,
         });
         finalText = retry.text;
@@ -391,6 +457,14 @@ async function attemptTranslateWithEngine(
   // 仅成功结果入缓存; 失败不缓存, 下次调用仍走真实请求以便重试。
   // 缓存写入最终采用值(可能是二次修正结果)
   cachePut(cacheKey, finalText);
+  // 翻译历史: 成功即记录(重翻/回看用); 历史任何失败都不影响翻译结果
+  if (recordHistoryEnabled) {
+    try {
+      recordHistory(text, finalText, engine.name);
+    } catch {
+      /* 历史写入失败静默, 不影响翻译主流程 */
+    }
+  }
   return finalText;
 }
 
@@ -412,6 +486,12 @@ export interface EngineResolvedOptions {
    * 取消路径不写任何缓存, 也不触发退避重试与故障转移。
    */
   signal?: AbortSignal;
+  /**
+   * 是否记录翻译历史(默认记录): 侧栏"历史"区数据源。批量导出等短时间
+   * 大量分块的场景传 false, 避免历史区被导出块刷屏; 标题/摘要等条目级
+   * 翻译保持默认记录(回看重翻有用)。
+   */
+  recordHistory?: boolean;
 }
 
 /**
@@ -452,6 +532,7 @@ export async function translateText(
         onProgress,
         opts?.disableMemory === true,
         opts?.signal,
+        opts?.recordHistory !== false,
       ),
     (engine, failover) =>
       opts?.onEngineResolved?.(engine.id, engine.name, failover),

@@ -11,6 +11,12 @@ export class GlossaryManager {
     this.entries.push(...entries);
   }
 
+  // 清空全部词条: 供"重建生效词表"在重灌前调用(先 reset 再 addMultiple),
+  // 其余 API 与内部结构保持不变
+  reset(): void {
+    this.entries = [];
+  }
+
   getTerms(): GlossaryEntry[] {
     return this.entries;
   }
@@ -78,6 +84,76 @@ export function buildGlossaryPrompt(entries: GlossaryEntry[]): string {
   if (entries.length === 0) return "";
   const lines = entries.map((e) => `- ${e.en} → ${e.zh}`);
   return `\n\n术语对照表(译文中必须严格使用下列译名):\n${lines.join("\n")}`;
+}
+
+export interface UserGlossaryParseResult {
+  entries: GlossaryEntry[];
+  errorLines: number;
+}
+
+/**
+ * 纯函数: 解析用户自定义术语表原文(textarea 逐行格式)。
+ * - 每行 "原文 = 译文", 按首个 = 分割, 两侧 trim(译文中再含 = 不影响);
+ * - 空行与 # 开头的注释行跳过;
+ * - 缺 = 或任一侧为空的行计入 errorLines, 但不阻断解析 — 合法行照常生效,
+ *   坏行由用户在设置页自行修正(调用方不因 errorLines > 0 拒绝整份词表)。
+ */
+export function parseUserGlossary(text: string): UserGlossaryParseResult {
+  const entries: GlossaryEntry[] = [];
+  let errorLines = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    // 空行与 # 注释行: 直接跳过, 不计入错误
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) {
+      errorLines += 1;
+      continue;
+    }
+    const en = trimmed.slice(0, eq).trim();
+    const zh = trimmed.slice(eq + 1).trim();
+    if (!en || !zh) {
+      errorLines += 1;
+      continue;
+    }
+    entries.push({ en, zh });
+  }
+  return { entries, errorLines };
+}
+
+/**
+ * 纯函数: 合并内置种子词表与用户词条 — 用户条目按 en 键(小写化比较)覆盖
+ * seeds 中的同名条目(覆盖后留在 seed 原位置, 保留用户的英文大小写与译名),
+ * 未命中 seed 的用户条目按书写顺序追加在尾部; 入参数组均不变异, 返回新数组。
+ */
+export function mergeGlossaries(
+  seeds: GlossaryEntry[],
+  user: GlossaryEntry[],
+): GlossaryEntry[] {
+  // 用户词条按 en 小写化建索引; 同名多条时后写覆盖先写
+  const overrides = new Map<string, GlossaryEntry>();
+  for (const entry of user) {
+    const key = entry.en.trim().toLowerCase();
+    if (key) overrides.set(key, entry);
+  }
+  const merged: GlossaryEntry[] = [];
+  const consumedKeys = new Set<string>();
+  for (const seed of seeds) {
+    const key = seed.en.trim().toLowerCase();
+    const override = overrides.get(key);
+    if (override) {
+      merged.push(override);
+      consumedKeys.add(key);
+    } else {
+      merged.push(seed);
+    }
+  }
+  // 未命中任何 seed 的用户词条追加在尾部(同名重复的用户行已被 consumedKeys 排除)
+  for (const entry of user) {
+    const key = entry.en.trim().toLowerCase();
+    if (key && !consumedKeys.has(key)) merged.push(entry);
+  }
+  return merged;
 }
 
 // 纯函数: 检出译文中仍以英文残留的词条, 大小写不敏感。

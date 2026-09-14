@@ -30,6 +30,22 @@ export interface EngineConfigWithSecret extends EngineConfig {
  */
 export type WritebackMode = "off" | "note" | "note-bilingual";
 
+/**
+ * 翻译风格预设五态:
+ * - standard: 标准(不追加风格指令, 保持历史行为, 默认);
+ * - academic: 学术规范(术语准确/句式严谨/保留被动语态);
+ * - literal: 直译(逐句忠实原文结构, 不意译不增删);
+ * - fluent: 流畅(以目标语表达习惯为准, 可调整语序);
+ * - custom: 自定义(使用 customPrompt 作为附加翻译指令)。
+ * 仅作用于划词/标题摘要翻译路径; 阅读助手 completeText 不注入。
+ */
+export type TranslateStyle =
+  | "standard"
+  | "academic"
+  | "literal"
+  | "fluent"
+  | "custom";
+
 export interface Settings {
   engine1: EngineConfig;
   engine2: EngineConfig;
@@ -59,6 +75,18 @@ export interface Settings {
   panelSplitRatio: number;
   /** 弹窗翻译成功后的写回模式(三态枚举, 默认 off 不写回) */
   writebackMode: WritebackMode;
+  /**
+   * 翻译风格预设(五态枚举, 默认 standard 不追加指令);
+   * 仅注入划词/标题摘要翻译请求, 阅读助手 completeText 不注入
+   */
+  translateStyle: TranslateStyle;
+  /** translateStyle === "custom" 时生效的自定义风格 prompt(默认空串) */
+  customPrompt: string;
+  /**
+   * 用户自定义术语表原文(textarea 逐字持久化): 每行一条 "原文 = 译文",
+   * # 开头为注释行; 同名条目(不区分大小写)覆盖内置铁电词表, 默认空串
+   */
+  userGlossary: string;
 }
 
 export interface GlossaryEntry {

@@ -7,7 +7,7 @@
  * split: settings in Zotero.Prefs, secrets in secretObj.
  */
 
-import type { Settings, EngineConfig, WritebackMode } from "../types";
+import type { Settings, EngineConfig, TranslateStyle, WritebackMode } from "../types";
 
 const ACADEMIC_PROMPT =
   'As an academic expert with specialized knowledge in various fields, please provide a proficient and precise translation from ${langFrom} to ${langTo} of the academic text enclosed in 📚. It is crucial to maintaining the original phrase or sentence and ensure accuracy while utilizing the appropriate language. The text is as follows:  📚 ${sourceText} 📚  Please provide the translated result without any additional explanation and remove 📚.';
@@ -48,7 +48,22 @@ const DEFAULT_SETTINGS: Settings = {
   panelSplitRatio: 0.5,
   // 写回收集: 默认关闭, 避免未经用户同意往文献里塞笔记
   writebackMode: "off",
+  // 翻译风格: 默认标准(不追加风格指令, 与历史行为一致)
+  translateStyle: "standard",
+  // 自定义风格 prompt: 仅 translateStyle === "custom" 时生效
+  customPrompt: "",
+  // 用户自定义术语表原文: 每行一条 "原文 = 译文", # 开头为注释
+  userGlossary: "",
 };
+
+// 翻译风格合法枚举(顺序即面板下拉顺序, 与 addon/prefs.xhtml 的 st-style 对齐)
+const TRANSLATE_STYLES: readonly TranslateStyle[] = [
+  "standard",
+  "academic",
+  "literal",
+  "fluent",
+  "custom",
+];
 
 // 写回模式合法枚举(顺序即面板下拉顺序, 与 addon/prefs.xhtml 的 st-writeback 对齐)
 const WRITEBACK_MODES: readonly WritebackMode[] = [
@@ -254,6 +269,24 @@ function mergeSettings(parsed: unknown): Settings {
     (WRITEBACK_MODES as readonly string[]).includes(writebackMode)
   ) {
     merged.writebackMode = writebackMode as WritebackMode;
+  }
+  // 翻译风格: 仅接受五态枚举内的字符串, 未知值/非字符串/旧版缺失回落 standard
+  const translateStyle = incoming.translateStyle;
+  if (
+    typeof translateStyle === "string" &&
+    (TRANSLATE_STYLES as readonly string[]).includes(translateStyle)
+  ) {
+    merged.translateStyle = translateStyle as TranslateStyle;
+  }
+  // 自定义风格 prompt: 仅接受字符串, 允许空串(custom 且空白时由 data 层回落无指令)
+  const customPrompt = incoming.customPrompt;
+  if (typeof customPrompt === "string") {
+    merged.customPrompt = customPrompt;
+  }
+  // 用户术语表原文: 仅接受字符串, 允许空串(解析容错由 parseUserGlossary 负责)
+  const userGlossary = incoming.userGlossary;
+  if (typeof userGlossary === "string") {
+    merged.userGlossary = userGlossary;
   }
   return merged;
 }
